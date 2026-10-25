@@ -7,12 +7,9 @@ comma      := ,
 # Setting RUSTFLAGS replaces the target rustflags from .cargo/config.toml, so the
 # macOS unused-dylib link argument is repeated for release builds.
 RELEASE_RUSTFLAGS := -Zlocation-detail=none -Zunstable-options -Cpanic=immediate-abort $(if $(findstring apple-darwin,$(TARGET)),-Clink-arg=-Wl$(comma)-dead_strip_dylibs)
-# Docker's musl-cargo wrapper owns linker, CRT, and loader flags. The Makefile
-# selects only the build mode and keeps Cargo invocations readable on macOS as
-# well as in the Linux release image.
-cargo = $(if $(findstring -linux-musl,$(TARGET)),,$(if $(filter release-static release-dynamic test,$(1)),CARGO_TARGET_$(TARGET_ENV)_LINKER=clang ,)$(if $(filter release-static release-dynamic,$(1)),RUSTFLAGS="$(RELEASE_RUSTFLAGS)")) MUSL_TARGET="$(TARGET)" MUSL_BUILD_MODE="$(1)" $(CARGO_CMD)
+cargo = $(if $(findstring -linux-musl,$(TARGET)),,$(if $(filter release-static test,$(1)),CARGO_TARGET_$(TARGET_ENV)_LINKER=clang ,)$(if $(filter release-static,$(1)),RUSTFLAGS="$(RELEASE_RUSTFLAGS)")) MUSL_TARGET="$(TARGET)" MUSL_BUILD_MODE="$(1)" $(CARGO_CMD)
 
-.PHONY: build test test-ci lint release release-dynamic verify-release verify-release-dynamic install
+.PHONY: build test test-ci lint release verify-release install
 
 build:
 	$(call cargo,dev) build
@@ -44,25 +41,6 @@ verify-release:
 	else \
 		echo "Skipping ELF checks for $(TARGET)"; \
 	fi
-
-verify-release-dynamic:
-	@test -f "target/$(TARGET)/dist/$(NAME)"
-	@if echo "$(TARGET)" | grep -q -- '-linux-musl$$'; then \
-		command -v readelf >/dev/null || { echo 'readelf is required for release verification'; exit 1; }; \
-		file "target/$(TARGET)/dist/$(NAME)" | grep -q 'dynamically linked' || { echo 'release is not dynamically linked'; exit 1; }; \
-		file "target/$(TARGET)/dist/$(NAME)" | grep -q 'stripped' || { echo 'release is not stripped'; exit 1; }; \
-		readelf -l "target/$(TARGET)/dist/$(NAME)" | grep -q '/lib/ld-musl-' || { echo 'release does not use the musl loader'; exit 1; }; \
-		readelf -d "target/$(TARGET)/dist/$(NAME)" | grep -q NEEDED || { echo 'release has no dynamic dependencies'; exit 1; }; \
-	else \
-		echo "Skipping ELF checks for $(TARGET)"; \
-	fi
-
-release-dynamic:
-	$(call cargo,release-dynamic) clean -p $(NAME) --profile dist --target $(TARGET)
-	$(call cargo,release-dynamic) build --profile dist \
-	  -Z build-std=std \
-	  -Z build-std-features= \
-	  --target $(TARGET)
 
 install: release
 	cp target/$(TARGET)/dist/$(NAME) ~/usr/bin/$(NAME)

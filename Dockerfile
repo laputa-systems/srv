@@ -101,9 +101,6 @@ RUN host_libdir="$(rustc --print target-libdir)" \
     && ln -sf /usr/lib/libgcc_s.so.1 "$host_libdir/libgcc_s.so.1" \
     && ln -sf /usr/lib/libc.so "$host_libdir/libc.so"
 
-# Keep musl linker, CRT, and loader flags in the image. Makefiles select only
-# static, dynamic, or test mode through this wrapper, so the same release
-# commands work on both container architectures.
 RUN cat > /usr/local/bin/musl-cargo <<'EOF' \
     && chmod +x /usr/local/bin/musl-cargo
 #!/bin/sh
@@ -113,11 +110,9 @@ target=${MUSL_TARGET:?MUSL_TARGET is required}
 case "$target" in
     x86_64-unknown-linux-musl)
         crt=/usr/lib/srv-crt/x86_64-unknown-linux-musl
-        loader=/lib/ld-musl-x86_64.so.1
         ;;
     aarch64-unknown-linux-musl)
         crt=/usr/lib/srv-crt/aarch64-unknown-linux-musl
-        loader=/lib/ld-musl-aarch64.so.1
         ;;
     *)
         exec cargo "$@"
@@ -132,10 +127,7 @@ case "$mode" in
         flags=$native
         ;;
     release-static)
-        flags="$native $release"
-        ;;
-    release-dynamic)
-        flags="$native $release -Ctarget-feature=-crt-static -Clink-arg=-B$crt -Clink-arg=-dynamic-linker=$loader"
+        flags="$native $release -Ctarget-feature=+crt-static"
         ;;
     *)
         echo "musl-cargo: unknown build mode: $mode" >&2
