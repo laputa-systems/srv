@@ -27,45 +27,45 @@ lint:
 	cargo clippy --fix --allow-dirty --all-targets --all-features -- --deny warnings
 
 release:
-	$(call cargo,release-static) clean -p $(NAME) --release --target $(TARGET)
-	$(call cargo,release-static) build --release \
+	$(call cargo,release-static) clean -p $(NAME) --profile dist --target $(TARGET)
+	$(call cargo,release-static) build --profile dist \
 	  -Z build-std=std \
 	  -Z build-std-features= \
 	  --target $(TARGET)
 
 verify-release:
-	@test -f "target/$(TARGET)/release/$(NAME)"
+	@test -f "target/$(TARGET)/dist/$(NAME)"
 	@if echo "$(TARGET)" | grep -q -- '-linux-musl$$'; then \
 		command -v readelf >/dev/null || { echo 'readelf is required for release verification'; exit 1; }; \
-		file "target/$(TARGET)/release/$(NAME)" | grep -Eq 'static-pie linked|statically linked' || { echo 'release is not statically linked'; exit 1; }; \
-		file "target/$(TARGET)/release/$(NAME)" | grep -q 'stripped' || { echo 'release is not stripped'; exit 1; }; \
-		! readelf -l "target/$(TARGET)/release/$(NAME)" | grep -q INTERP || { echo 'release has a dynamic ELF interpreter'; exit 1; }; \
-		! readelf -d "target/$(TARGET)/release/$(NAME)" | grep -q NEEDED || { echo 'release has dynamic dependencies'; exit 1; }; \
+		file "target/$(TARGET)/dist/$(NAME)" | grep -Eq 'static-pie linked|statically linked' || { echo 'release is not statically linked'; exit 1; }; \
+		file "target/$(TARGET)/dist/$(NAME)" | grep -q 'stripped' || { echo 'release is not stripped'; exit 1; }; \
+		! readelf -l "target/$(TARGET)/dist/$(NAME)" | grep -q INTERP || { echo 'release has a dynamic ELF interpreter'; exit 1; }; \
+		! readelf -d "target/$(TARGET)/dist/$(NAME)" | grep -q NEEDED || { echo 'release has dynamic dependencies'; exit 1; }; \
 	else \
 		echo "Skipping ELF checks for $(TARGET)"; \
 	fi
 
 verify-release-dynamic:
-	@test -f "target/$(TARGET)/release/$(NAME)"
+	@test -f "target/$(TARGET)/dist/$(NAME)"
 	@if echo "$(TARGET)" | grep -q -- '-linux-musl$$'; then \
 		command -v readelf >/dev/null || { echo 'readelf is required for release verification'; exit 1; }; \
-		file "target/$(TARGET)/release/$(NAME)" | grep -q 'dynamically linked' || { echo 'release is not dynamically linked'; exit 1; }; \
-		file "target/$(TARGET)/release/$(NAME)" | grep -q 'stripped' || { echo 'release is not stripped'; exit 1; }; \
-		readelf -l "target/$(TARGET)/release/$(NAME)" | grep -q '/lib/ld-musl-' || { echo 'release does not use the musl loader'; exit 1; }; \
-		readelf -d "target/$(TARGET)/release/$(NAME)" | grep -q NEEDED || { echo 'release has no dynamic dependencies'; exit 1; }; \
+		file "target/$(TARGET)/dist/$(NAME)" | grep -q 'dynamically linked' || { echo 'release is not dynamically linked'; exit 1; }; \
+		file "target/$(TARGET)/dist/$(NAME)" | grep -q 'stripped' || { echo 'release is not stripped'; exit 1; }; \
+		readelf -l "target/$(TARGET)/dist/$(NAME)" | grep -q '/lib/ld-musl-' || { echo 'release does not use the musl loader'; exit 1; }; \
+		readelf -d "target/$(TARGET)/dist/$(NAME)" | grep -q NEEDED || { echo 'release has no dynamic dependencies'; exit 1; }; \
 	else \
 		echo "Skipping ELF checks for $(TARGET)"; \
 	fi
 
 release-dynamic:
-	$(call cargo,release-dynamic) clean -p $(NAME) --release --target $(TARGET)
-	$(call cargo,release-dynamic) build --release \
+	$(call cargo,release-dynamic) clean -p $(NAME) --profile dist --target $(TARGET)
+	$(call cargo,release-dynamic) build --profile dist \
 	  -Z build-std=std \
 	  -Z build-std-features= \
 	  --target $(TARGET)
 
 install: release
-	cp target/$(TARGET)/release/$(NAME) ~/usr/bin/$(NAME)
+	cp target/$(TARGET)/dist/$(NAME) ~/usr/bin/$(NAME)
 	@if test "$$(uname -s)" = Darwin; then \
 		codesign -fs - ~/usr/bin/$(NAME); \
 	fi

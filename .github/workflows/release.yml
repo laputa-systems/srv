@@ -68,7 +68,7 @@ jobs:
         run: make test-ci TARGET="${{ matrix.target }}"
       - name: Save macOS release
         if: matrix.docker_platform == ''
-        run: cp "target/${{ matrix.target }}/release/srv" "srv-${{ matrix.target }}"
+        run: cp "target/${{ matrix.target }}/dist/srv" "srv-${{ matrix.target }}"
       - name: Build and verify Linux releases
         if: matrix.docker_platform != ''
         run: |
@@ -81,10 +81,10 @@ jobs:
               make release-dynamic TARGET=${{ matrix.target }}
               make verify-release-dynamic TARGET=${{ matrix.target }}
               make test-ci TARGET=${{ matrix.target }}
-              cp target/${{ matrix.target }}/release/srv srv-${{ matrix.target }}
+              cp target/${{ matrix.target }}/dist/srv srv-${{ matrix.target }}
               make release TARGET=${{ matrix.target }}
               make verify-release TARGET=${{ matrix.target }}
-              cp target/${{ matrix.target }}/release/srv srv-${{ matrix.target }}-static
+              cp target/${{ matrix.target }}/dist/srv srv-${{ matrix.target }}-static
             '
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
