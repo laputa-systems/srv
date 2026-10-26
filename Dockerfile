@@ -5,6 +5,9 @@ ARG LLVM_VERSION=23.1.0-rc2
 ARG LLVM_RELEASE_SHA=6eb5fb9
 ARG MOLD_VERSION=3.0.0
 ARG MOLD_RELEASE_SHA=cfb4aab
+ARG RUSTUP_VERSION=1.29.1
+ARG RUSTUP_X86_64_SHA256=331228566cc931f32cd684f9bebc5956a5e5d7394c8d5de595f196a658ab98e6
+ARG RUSTUP_AARCH64_SHA256=1ddf36182ac5d1782dbeefcb9bea7f5f9412d88f4a0d5047b1564a223624e8c6
 
 RUN apk add --no-cache \
     binutils \
@@ -58,17 +61,18 @@ RUN for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do \
         done; \
     done
 
-ADD https://static.rust-lang.org/rustup/dist/x86_64-unknown-linux-musl/rustup-init /rustup-init-x86_64
-ADD https://static.rust-lang.org/rustup/dist/aarch64-unknown-linux-musl/rustup-init /rustup-init-aarch64
 RUN case "$TARGETARCH" in \
-        amd64) init=/rustup-init-x86_64 ;; \
-        arm64) init=/rustup-init-aarch64 ;; \
+        amd64) arch=x86_64; sum=$RUSTUP_X86_64_SHA256 ;; \
+        arm64) arch=aarch64; sum=$RUSTUP_AARCH64_SHA256 ;; \
         *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
-    && cp "$init" /rustup-init \
-    && chmod +x /rustup-init \
-    && /rustup-init -y --default-toolchain none \
-    && rm /rustup-init /rustup-init-x86_64 /rustup-init-aarch64
+    && init=/srv/.work/tmp/rustup-init \
+    && mkdir -p /srv/.work/tmp \
+    && wget -O "$init" "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${arch}-unknown-linux-musl/rustup-init" \
+    && echo "$sum  $init" | sha256sum -c - \
+    && chmod +x "$init" \
+    && "$init" -y --default-toolchain none \
+    && rm "$init"
 
 ENV PATH="/opt/llvm-musl/bin:/root/.cargo/bin:$PATH" \
     CC="/opt/llvm-musl/bin/clang" \
