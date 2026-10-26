@@ -18,8 +18,32 @@ defaults:
     shell: bash -euo pipefail {0}
 
 jobs:
+  preflight:
+    name: Validate release ref
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      default_branch: ${{ steps.ref.outputs.default_branch }}
+    steps:
+      - name: Require the default branch
+        id: ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          default_branch=$(gh api "repos/$REPOSITORY" --jq '.default_branch')
+          if [[ "$EVENT_NAME" != workflow_dispatch || "$REF" != "refs/heads/$default_branch" ]]; then
+            echo "Release dispatch rejected: expected workflow_dispatch on refs/heads/$default_branch, got $EVENT_NAME on $REF" >&2
+            exit 1
+          fi
+          echo "default_branch=$default_branch" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build (${{ matrix.target }})
+    needs: preflight
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     permissions:
@@ -46,6 +70,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.sha }}
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
         if: matrix.docker_platform != ''
       - name: Build Linux release image
@@ -89,18 +114,40 @@ jobs:
 
   release:
     name: Create pre-release
-    needs: build
+    needs: [preflight, build]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       actions: read
       contents: write
     steps:
+      - name: Recheck release ref and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ needs.preflight.outputs.default_branch }}
+          RELEASE_TAG: release-${{ github.sha }}
+        run: |
+          default_branch=$(gh api "repos/$REPOSITORY" --jq '.default_branch')
+          if [[ "$EVENT_NAME" != workflow_dispatch || "$REF" != "refs/heads/$default_branch" || "$DEFAULT_BRANCH" != "$default_branch" ]]; then
+            echo "Release publication rejected: expected workflow_dispatch on refs/heads/$default_branch, got $EVENT_NAME on $REF" >&2
+            exit 1
+          fi
+          if response=$(gh api "repos/$REPOSITORY/git/ref/tags/$RELEASE_TAG" 2>&1); then
+            echo "Release publication rejected: tag $RELEASE_TAG already exists; inspect it before proceeding" >&2
+            exit 1
+          else
+            if [[ "$response" != *"HTTP 404"* ]]; then
+              printf 'Could not verify that tag %s is absent: %s\n' "$RELEASE_TAG" "$response" >&2
+              exit 1
+            fi
+          fi
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: srv-*
           path: dist
-          merge-multiple: true
 
       - name: Verify Linux ELF artifacts are fully static
         run: |
@@ -136,10 +183,69 @@ jobs:
             exit 1
           fi
 
-      - name: Zip artifacts
-        run: for f in dist/*; do zip -9 --junk-paths "$f.zip" "$f"; done
+      - name: Validate and package release artifacts
+        run: |
+          expected_artifacts=$'srv-aarch64-apple-darwin\nsrv-aarch64-unknown-linux-musl\nsrv-x86_64-unknown-linux-musl'
+          actual_artifacts=$(find dist -mindepth 1 -maxdepth 1 -print | sed 's|.*/||' | LC_ALL=C sort)
+          if [[ "$actual_artifacts" != "$expected_artifacts" ]]; then
+            echo "Unexpected release artifact directories:" >&2
+            printf '%s\n' "$actual_artifacts" >&2
+            exit 1
+          fi
+          expected_mac='srv-aarch64-apple-darwin'
+          expected_arm='srv-aarch64-unknown-linux-musl-static'
+          expected_x86='srv-x86_64-unknown-linux-musl-static'
+          for spec in \
+            "$expected_mac:srv-aarch64-apple-darwin" \
+            "$expected_arm:srv-aarch64-unknown-linux-musl" \
+            "$expected_x86:srv-x86_64-unknown-linux-musl"; do
+            expected=${spec%%:*}
+            artifact=${spec#*:}
+            actual=$(find "dist/$artifact" -type f -print | sed 's|.*/||' | LC_ALL=C sort)
+            if [[ "$actual" != "$expected" ]]; then
+              echo "Unexpected files in artifact $artifact:" >&2
+              printf '%s\n' "$actual" >&2
+              exit 1
+            fi
+          done
+          mkdir dist/zips
+          for file in \
+            dist/srv-aarch64-unknown-linux-musl/srv-aarch64-unknown-linux-musl-static \
+            dist/srv-x86_64-unknown-linux-musl/srv-x86_64-unknown-linux-musl-static; do
+            zip -9 --junk-paths "dist/zips/$(basename "$file").zip" "$file"
+          done
+          cd dist/zips
+          sha256sum *.zip | LC_ALL=C sort -k2 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Create release tag at triggering SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: release-${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ needs.preflight.outputs.default_branch }}
+        run: |
+          default_branch=$(gh api "repos/$REPOSITORY" --jq '.default_branch')
+          if [[ "$EVENT_NAME" != workflow_dispatch || "$REF" != "refs/heads/$default_branch" || "$DEFAULT_BRANCH" != "$default_branch" ]]; then
+            echo "Release publication rejected: expected workflow_dispatch on refs/heads/$default_branch, got $EVENT_NAME on $REF" >&2
+            exit 1
+          fi
+          if response=$(gh api "repos/$REPOSITORY/git/ref/tags/$RELEASE_TAG" 2>&1); then
+            echo "Release publication rejected: tag $RELEASE_TAG already exists; inspect it before proceeding" >&2
+            exit 1
+          elif [[ "$response" != *"HTTP 404"* ]]; then
+            printf 'Could not verify that tag %s is absent: %s\n' "$RELEASE_TAG" "$response" >&2
+            exit 1
+          fi
+          if response=$(gh api "repos/$REPOSITORY/git/refs" -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$GITHUB_SHA" 2>&1); then
+            echo "Created $RELEASE_TAG at $GITHUB_SHA"
+          else
+            printf 'Could not create release tag %s at %s: %s\n' "$RELEASE_TAG" "$GITHUB_SHA" "$response" >&2
+            exit 1
+          fi
       - name: Create pre-release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: release-${{ github.sha }}
-        run: gh release create "$RELEASE_TAG" dist/*.zip --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" --title "$RELEASE_TAG"
+        run: gh release create "$RELEASE_TAG" dist/zips/*.zip dist/zips/SHA256SUMS --repo "$GITHUB_REPOSITORY" --prerelease --verify-tag --title "$RELEASE_TAG"
