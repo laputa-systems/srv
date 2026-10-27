@@ -178,8 +178,6 @@ struct IgnoreRules {
     patterns: Vec<IgnorePattern>,
 }
 
-// --- humanize -----------------------------------------------------------------
-
 fn file_size(n: u64) -> String {
     if n < 1024 {
         return format!("{n}");
@@ -244,8 +242,6 @@ fn natural_cmp(s1: &[u8], s2: &[u8]) -> Ordering {
     s1.len().cmp(&s2.len())
 }
 
-// --- URL encoding -------------------------------------------------------------
-
 fn percent_decode(s: &str) -> Cow<'_, str> {
     if !s.as_bytes().contains(&b'%') {
         return Cow::Borrowed(s);
@@ -302,10 +298,6 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-// --- Path helpers -------------------------------------------------------------
-
-/// Normalize a request path into `out`, reusing its allocation across calls.
-/// Returns `true` if the result is within `base`, `false` for traversal.
 fn normalize_into(base: &Path, raw: &str, out: &mut PathBuf) -> bool {
     out.as_mut_os_string().clear();
     out.push(base);
@@ -321,8 +313,6 @@ fn normalize_into(base: &Path, raw: &str, out: &mut PathBuf) -> bool {
     }
     out.starts_with(base)
 }
-
-// --- MIME types ---------------------------------------------------------------
 
 fn mime(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
@@ -644,8 +634,6 @@ fn query_param(path_raw: &str, key: &str) -> Option<String> {
     None
 }
 
-// --- Zero-copy file transfer --------------------------------------------------
-
 #[cfg(target_os = "macos")]
 fn send_file(file: &File, sock: &TcpStream, len: u64) -> io::Result<()> {
     unsafe extern "C" {
@@ -706,8 +694,6 @@ fn send_file(file: &File, sock: &TcpStream, _len: u64) -> io::Result<()> {
     io::copy(&mut file.try_clone()?, &mut sock.try_clone()?)?;
     Ok(())
 }
-
-// --- HTTP helpers (all stack-buffered) ----------------------------------------
 
 fn write_headers(
     mut sock: &TcpStream,
@@ -787,13 +773,10 @@ fn serve_markdown_fragment(sock: &TcpStream, path: &Path, html_out: &mut String)
     write_body(sock, "text/html; charset=utf-8", html_out.as_bytes())
 }
 
-// --- Directory listing --------------------------------------------------------
-
 fn render_listing(dir: &Path, html: &mut String) -> io::Result<()> {
     html.clear();
     html.push_str(LISTING_PRELUDE);
 
-    // Precompute lowercase sort keys (Schwartzian transform)
     let mut entries: Vec<_> = fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .map(|e| {
@@ -834,13 +817,10 @@ fn render_listing(dir: &Path, html: &mut String) -> io::Result<()> {
     Ok(())
 }
 
-// --- Server ------------------------------------------------------------------
-
 struct Server {
     dir: PathBuf,
     quiet: bool,
     docs_mode: bool,
-    // When Some, every request serves this filename regardless of URL path.
     single_file: Option<String>,
     fp: PathBuf,
     html: String,
@@ -998,8 +978,6 @@ impl Server {
     }
 }
 
-// --- main --------------------------------------------------------------------
-
 fn die(msg: &str) -> ! {
     eprintln!("{msg}");
     std::process::exit(1);
@@ -1100,8 +1078,6 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::TcpStream;
 
-    // --- file_size ---------------------------------------------------------------
-
     #[test]
     fn file_size_bytes() {
         assert_eq!(file_size(0), "0");
@@ -1131,8 +1107,6 @@ mod tests {
     fn file_size_tera() {
         assert_eq!(file_size(1024u64 * 1024 * 1024 * 1024), "1.0T");
     }
-
-    // --- natural_cmp -------------------------------------------------------------
 
     #[test]
     fn natural_cmp_basic() {
@@ -1171,8 +1145,6 @@ mod tests {
         assert_eq!(natural_cmp(b"a", b""), Ordering::Greater);
         assert_eq!(natural_cmp(b"", b""), Ordering::Equal);
     }
-
-    // --- percent_decode / percent_encode -----------------------------------------
 
     #[test]
     fn percent_decode_passthrough() {
@@ -1219,8 +1191,6 @@ mod tests {
         let input = "file with spaces & (parens)";
         assert_eq!(percent_decode(&percent_encode(input)).as_ref(), input);
     }
-
-    // --- normalize_into ----------------------------------------------------------
 
     fn normalize_test(base: &str, raw: &str) -> Option<PathBuf> {
         let base = Path::new(base);
@@ -1298,8 +1268,6 @@ mod tests {
         assert_eq!(ptr1, ptr2);
     }
 
-    // --- mime --------------------------------------------------------------------
-
     #[test]
     fn mime_known() {
         assert_eq!(mime(Path::new("f.html")), "text/html; charset=utf-8");
@@ -1322,8 +1290,6 @@ mod tests {
         assert!(!is_markdown(Path::new("README.txt")));
         assert!(!is_markdown(Path::new("README")));
     }
-
-    // --- Integration tests (real TCP) --------------------------------------------
 
     struct TestServer {
         addr: std::net::SocketAddr,
