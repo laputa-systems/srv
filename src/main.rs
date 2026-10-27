@@ -298,6 +298,19 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn normalize_into(base: &Path, raw: &str, out: &mut PathBuf) -> bool {
     out.as_mut_os_string().clear();
     out.push(base);
@@ -794,21 +807,22 @@ fn render_listing(dir: &Path, html: &mut String) -> io::Result<()> {
             Err(_) => continue,
         };
         let ft = meta.file_type();
+        let text = html_escape(&name);
         if ft.is_dir() {
             let enc = percent_encode(&name);
-            write!(html, "<tr><td><a href=\"{enc}/\">{name}/</a></td></tr>").unwrap();
+            write!(html, "<tr><td><a href=\"{enc}/\">{text}/</a></td></tr>").unwrap();
         } else if ft.is_file() {
             let enc = percent_encode(&name);
             let sz = file_size(meta.len());
             write!(
                 html,
-                "<tr><td><a href=\"{enc}\">{name}</a></td><td>{sz}</td></tr>"
+                "<tr><td><a href=\"{enc}\">{text}</a></td><td>{sz}</td></tr>"
             )
             .unwrap();
         } else {
             write!(
                 html,
-                "<tr><td><p style=\"color: #777\">{name}</p></td></tr>"
+                "<tr><td><p style=\"color: #777\">{text}</p></td></tr>"
             )
             .unwrap();
         }
@@ -895,12 +909,17 @@ impl Server {
         let ft = meta.file_type();
         if ft.is_dir() {
             self.fp.push("index.html");
-            if let Ok(idx_meta) = fs::metadata(self.fp.as_path())
-                && idx_meta.is_file()
-            {
-                let result = serve_file(sock, &self.fp, idx_meta.len(), "text/html; charset=utf-8");
-                self.fp.pop();
-                return result;
+            if let Ok(idx_meta) = fs::symlink_metadata(self.fp.as_path()) {
+                if idx_meta.file_type().is_symlink() {
+                    self.fp.pop();
+                    return write_error(sock, 403, "Forbidden: symlinks not served");
+                }
+                if idx_meta.is_file() {
+                    let result =
+                        serve_file(sock, &self.fp, idx_meta.len(), "text/html; charset=utf-8");
+                    self.fp.pop();
+                    return result;
+                }
             }
             self.fp.pop();
 
@@ -963,13 +982,16 @@ impl Server {
         if !is_markdown(&self.fp) {
             return write_error(sock, 400, "Bad Request: path must be a markdown file");
         }
-        let meta = match fs::metadata(&self.fp) {
+        let meta = match fs::symlink_metadata(&self.fp) {
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
                 return write_error(sock, 404, "Not Found");
             }
             Err(e) => return Err(e),
         };
+        if meta.file_type().is_symlink() {
+            return write_error(sock, 403, "Forbidden: symlinks not served");
+        }
         if !meta.is_file() {
             return write_error(sock, 404, "Not Found");
         }
@@ -1077,6 +1099,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpStream;
+    use std::os::unix::fs::symlink;
 
     #[test]
     fn file_size_bytes() {
@@ -1637,5 +1660,55 @@ mod tests {
         let (_, body) = srv.get("/");
         assert!(body.contains("file%202.txt"));
         assert!(body.contains("file 2.txt"));
+    }
+
+    #[test]
+    fn integration_directory_listing_escapes_html() {
+        let srv = TestServer::new();
+        let name = "<img src=x&y>";
+        fs::write(srv._dir.path().join(name), "x").unwrap();
+        let (_, body) = srv.get("/");
+        assert!(body.contains("&lt;img src=x&amp;y&gt;"));
+        assert!(!body.contains("<img"));
+        assert!(body.contains("href=\"%3Cimg%20src%3Dx%26y%3E\""));
+    }
+
+    #[test]
+    fn integration_index_symlink_forbidden() {
+        let srv = TestServer::new();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("secret.txt");
+        fs::write(&secret, "secret-outside").unwrap();
+        let dir = srv._dir.path().join("with-index");
+        fs::create_dir(&dir).unwrap();
+        symlink(&secret, dir.join("index.html")).unwrap();
+        let (headers, body) = srv.get("/with-index/");
+        assert!(headers.contains("403"));
+        assert!(headers.contains("Forbidden: symlinks not served"));
+        assert!(!body.contains("secret-outside"));
+    }
+
+    #[test]
+    fn integration_docs_symlink_forbidden() {
+        let srv = TestServer::new_docs();
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("note.md");
+        fs::write(&secret, "secret-outside").unwrap();
+        symlink(&secret, srv._dir.path().join("evil.md")).unwrap();
+        let (headers, body) = srv.get("/__docs__/md?path=evil.md");
+        assert!(headers.contains("403"));
+        assert!(headers.contains("Forbidden: symlinks not served"));
+        assert!(!body.contains("secret-outside"));
+    }
+
+    #[test]
+    fn integration_directory_symlink_followed() {
+        let srv = TestServer::new();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("a.txt"), "outside-file").unwrap();
+        symlink(outside.path(), srv._dir.path().join("linked")).unwrap();
+        let (headers, body) = srv.get("/linked/a.txt");
+        assert!(headers.contains("200"));
+        assert_eq!(body, "outside-file");
     }
 }
