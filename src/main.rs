@@ -669,6 +669,8 @@ fn send_file(file: &File, sock: &TcpStream, len: u64) -> io::Result<()> {
         if chunk > 0 {
             offset += chunk;
             remaining -= chunk;
+        } else if ret == 0 {
+            break;
         }
         if ret == -1 {
             let e = io::Error::last_os_error();
@@ -696,6 +698,9 @@ fn send_file(file: &File, sock: &TcpStream, len: u64) -> io::Result<()> {
                 continue;
             }
             return Err(e);
+        }
+        if n == 0 {
+            break;
         }
         remaining -= n as usize;
     }
@@ -1710,5 +1715,110 @@ mod tests {
         let (headers, body) = srv.get("/linked/a.txt");
         assert!(headers.contains("200"));
         assert_eq!(body, "outside-file");
+    }
+
+    #[test]
+    fn send_file_truncated_returns_and_server_stays_live() {
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.bin");
+        let original = vec![b'x'; 1024 * 1024];
+        fs::write(&path, &original).unwrap();
+        let stale_len = fs::metadata(&path).unwrap().len();
+        fs::write(&path, b"").unwrap();
+
+        let run_once = |len: u64| {
+            let file = File::open(&path).unwrap();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let (tx, _rx) = channel();
+            let reader = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut buf = Vec::new();
+                let _ = stream.read_to_end(&mut buf);
+                tx.send(buf).unwrap();
+            });
+            let writer = std::thread::spawn(move || {
+                let sock = TcpStream::connect(addr).unwrap();
+                send_file(&file, &sock, len)
+            });
+            let result = writer.join().expect("send_file thread panicked");
+            let _ = reader.join();
+            result
+        };
+
+        let (tx, rx) = channel();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                tx.send(run_once(stale_len)).unwrap();
+            });
+            let result = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("truncated send_file did not return; loop spins on 0-byte sendfile");
+            result.unwrap();
+        });
+
+        fs::write(&path, "alive").unwrap();
+        run_once(5).unwrap();
+
+        let srv = TestServer::new();
+        assert_eq!(srv.status("/hello.txt"), 200);
+    }
+
+    #[test]
+    fn release_artifact_names_match_docs() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workflow = fs::read_to_string(root.join(".github/workflows/release.yml")).unwrap();
+        let readme = fs::read_to_string(root.join("README.md")).unwrap();
+        let makefile = fs::read_to_string(root.join("Makefile")).unwrap();
+        let agents = fs::read_to_string(root.join("AGENTS.md")).unwrap();
+
+        let mut zips = Vec::new();
+        for line in workflow.lines() {
+            let line = line.trim();
+            let Some(rest) = line.strip_prefix("dist/srv-") else {
+                continue;
+            };
+            if !rest.contains('/') {
+                continue;
+            }
+            for token in rest.split_whitespace() {
+                let token = token.trim_end_matches([';', '\\']);
+                if token.is_empty() || !token.contains('/') || token.contains('$') || token.contains('"') {
+                    continue;
+                }
+                let full = format!("dist/srv-{token}");
+                if !full.ends_with(".zip") {
+                    let base = full.rsplit('/').next().unwrap().to_owned();
+                    zips.push(format!("{base}.zip"));
+                }
+            }
+        }
+        zips.sort();
+        zips.dedup();
+        assert!(
+            !zips.is_empty(),
+            "release workflow should list packaged Linux binaries"
+        );
+        for zip in &zips {
+            assert!(
+                readme.contains(zip),
+                "README.md should document release archive {zip}"
+            );
+        }
+
+        assert!(
+            makefile.contains("target/$(TARGET)/dist/$(NAME)"),
+            "Makefile dist output should stay at target/$(TARGET)/dist/$(NAME)"
+        );
+        assert!(
+            agents.contains("target/<rust-target>/dist/srv"),
+            "AGENTS.md should document the Makefile dist output path"
+        );
     }
 }
