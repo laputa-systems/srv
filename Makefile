@@ -21,7 +21,7 @@ test-ci:
 	$(call cargo,test) test --quiet --release
 
 lint:
-	cargo clippy --fix --allow-dirty --all-targets --all-features -- --deny warnings
+	cargo clippy --all-targets --all-features -- --deny warnings
 
 release:
 	$(call cargo,release-static) clean -p $(NAME) --profile dist --target $(TARGET)
