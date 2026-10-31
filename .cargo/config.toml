@@ -2,3 +2,9 @@
 # loading that unused image at startup; keep Cargo's normal release profile.
 [target.'cfg(target_os = "macos")']
 rustflags = ["-C", "link-arg=-Wl,-dead_strip_dylibs"]
+
+[source.crates-io]
+replace-with = "stuff"
+
+[source.stuff]
+registry = "sparse+https://crates.17166969.xyz/current/crates-io/"
