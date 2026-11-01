@@ -1,4 +1,4 @@
-FROM alpine:3.24.1
+FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 ARG TARGETARCH
 ARG LLVM_VERSION=23.1.0-rc2
@@ -10,11 +10,11 @@ ARG RUSTUP_X86_64_SHA256=331228566cc931f32cd684f9bebc5956a5e5d7394c8d5de595f196a
 ARG RUSTUP_AARCH64_SHA256=1ddf36182ac5d1782dbeefcb9bea7f5f9412d88f4a0d5047b1564a223624e8c6
 
 RUN apk add --no-cache \
-    binutils \
-    file \
-    make \
-    musl-dev \
-    libgcc
+    binutils=2.45.1-r1 \
+    file=5.47-r2 \
+    make=4.4.1-r4 \
+    musl-dev=1.2.6-r3 \
+    libgcc=15.2.0-r5
 
 # rustix requests libutil for Unix PTY support; musl provides those symbols in
 # libc, so an empty archive satisfies the legacy library name without adding a
