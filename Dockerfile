@@ -2,7 +2,7 @@ FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4c
 
 ARG TARGETARCH
 ARG LLVM_VERSION=23.1.5
-ARG LLVM_RELEASE_SHA=4c2254e
+ARG LLVM_RELEASE_SHA=c4f9b08
 ARG MOLD_VERSION=3.0.0
 ARG MOLD_RELEASE_SHA=cfb4aab
 ARG RUSTUP_VERSION=1.29.1
@@ -30,8 +30,8 @@ RUN case "$TARGETARCH" in \
         arm64) archive=/tmp/llvm-aarch64.tar.xz ;; \
         *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
     esac \
-    && echo '9f599abd0caf81df64fdf70442ef2c39cb701d346030643193b39a743ad43ce0  /tmp/llvm-x86_64.tar.xz' | sha256sum -c - \
-    && echo '187e71574399adaedd6077ffb5e4b20900aa29f32c3f131db2f4440273b75444  /tmp/llvm-aarch64.tar.xz' | sha256sum -c - \
+    && echo '8039dfa9e5b2ee53b04c1dcf94d65bd76c27842b0d4128c5a7bc6ba21d345fec  /tmp/llvm-x86_64.tar.xz' | sha256sum -c - \
+    && echo '7055513530fc60361e29d01d5c849d356b25e9e38124811a420970941dd32979  /tmp/llvm-aarch64.tar.xz' | sha256sum -c - \
     && mkdir -p /opt/llvm-musl \
     && tar xf "$archive" -C /opt/llvm-musl --strip-components=1 \
     && test -f /opt/llvm-musl/lib/libclang.so \
