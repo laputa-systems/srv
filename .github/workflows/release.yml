@@ -244,8 +244,33 @@ jobs:
             printf 'Could not create release tag %s at %s: %s\n' "$RELEASE_TAG" "$GITHUB_SHA" "$response" >&2
             exit 1
           fi
+
+      - name: Write release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="$RUNNER_TEMP/release-notes.md"
+          previous=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 1 \
+            --json tagName --jq '.[0].tagName // ""')
+          if [[ -z "$previous" ]]; then
+            printf 'Initial release at %s.\n' "$GITHUB_SHA" > "$notes"
+            exit 0
+          fi
+          compare="repos/$GITHUB_REPOSITORY/compare/$previous...$GITHUB_SHA"
+          status=$(gh api "$compare" --jq '.status')
+          if [[ "$status" != ahead ]]; then
+            printf 'Release notes rejected: %s is %s relative to %s, expected ahead\n' "$GITHUB_SHA" "$status" "$previous" >&2
+            exit 1
+          fi
+          {
+            printf '## Changes since %s\n\n' "$previous"
+            gh api --paginate "$compare?per_page=100" --jq '.commits[] | "- \(.sha[0:12]) \(.commit.message | split("\n")[0])"'
+            printf '\n**Full changelog**: %s/%s/compare/%s...%s\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$previous" "$GITHUB_SHA"
+          } > "$notes"
+
       - name: Create pre-release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: release-${{ github.sha }}
-        run: gh release create "$RELEASE_TAG" dist/zips/*.zip dist/zips/SHA256SUMS --repo "$GITHUB_REPOSITORY" --prerelease --verify-tag --title "$RELEASE_TAG"
+        run: gh release create "$RELEASE_TAG" dist/zips/*.zip dist/zips/SHA256SUMS --repo "$GITHUB_REPOSITORY" --prerelease --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag --title "$RELEASE_TAG"
