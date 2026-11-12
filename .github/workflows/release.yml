@@ -210,6 +210,7 @@ jobs:
           done
           mkdir dist/zips
           for file in \
+            dist/srv-aarch64-apple-darwin/srv-aarch64-apple-darwin \
             dist/srv-aarch64-unknown-linux-musl/srv-aarch64-unknown-linux-musl-static \
             dist/srv-x86_64-unknown-linux-musl/srv-x86_64-unknown-linux-musl-static; do
             zip -9 --junk-paths "dist/zips/$(basename "$file").zip" "$file"

@@ -6,7 +6,7 @@ Serve a file or directory over HTTP. Directory listings are browsable, Markdown 
 
 ## Install
 
-Download a Linux archive from [GitHub releases](https://github.com/laputa-systems/srv/releases). The archives are `srv-x86_64-unknown-linux-musl-static.zip` and `srv-aarch64-unknown-linux-musl-static.zip`. On x86_64:
+Download the archive for your platform from [GitHub releases](https://github.com/laputa-systems/srv/releases). The archives are `srv-aarch64-apple-darwin.zip`, `srv-aarch64-unknown-linux-musl-static.zip`, and `srv-x86_64-unknown-linux-musl-static.zip`. On x86_64 Linux:
 
 ```sh
 unzip srv-x86_64-unknown-linux-musl-static.zip
@@ -14,7 +14,7 @@ mkdir -p ~/.local/bin
 install -m 755 srv-x86_64-unknown-linux-musl-static ~/.local/bin/srv
 ```
 
-Put `~/.local/bin` on your `PATH`. The release does not publish a macOS build.
+Put `~/.local/bin` on your `PATH`. Linux archives are statically linked; on macOS, unzip `srv-aarch64-apple-darwin.zip` and install `srv-aarch64-apple-darwin` the same way.
 
 ## Use
 
