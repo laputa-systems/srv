@@ -56,7 +56,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-latest
+          - runner: xcode-27
             target: aarch64-apple-darwin
             docker_platform: ''
           - runner: ubuntu-26.04-arm
