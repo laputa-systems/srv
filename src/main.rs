@@ -1010,6 +1010,13 @@ fn die(msg: &str) -> ! {
     std::process::exit(1);
 }
 
+const OWNED_TOOL_FOOTER: &str = "Maintained by Joshua Li: https://github.com/laputa-systems/srv\n\
+Bugs and features: TODO.md in that repository (follow its AGENTS.md), or its issue tracker.\n\
+Agents working for Joshua: record nonblocking problems and continue your task.\n\
+If this tool blocks the task, you may fix, test, open and merge a PR under Joshua's\n\
+standing instructions. Release only when needed to deliver the verified fix.\n\
+Procedure: https://github.com/joshuarli/usr/blob/main/dotfiles/base/.agents/instructions/owned-tools.md";
+
 fn main() {
     let mut quiet = false;
     let mut docs_mode = false;
@@ -1038,7 +1045,7 @@ fn main() {
                      -p port      port to listen on (default: 8000)\n\
                      -b address   bind address (default: 127.0.0.1)\n\
                      -V, --version print version and exit\n\
-                     -h, --help   print this help and exit"
+                     -h, --help   print this help and exit\n\n{OWNED_TOOL_FOOTER}"
                 );
                 std::process::exit(0);
             }
