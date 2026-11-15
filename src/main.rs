@@ -1300,6 +1300,11 @@ mod tests {
     }
 
     #[test]
+    fn control_failing_test() {
+        assert_eq!(mime(Path::new("f.css")), "text/plain");
+    }
+
+    #[test]
     fn mime_unknown() {
         assert_eq!(mime(Path::new("f.xyz")), "application/octet-stream");
         assert_eq!(mime(Path::new("noext")), "application/octet-stream");
