@@ -571,7 +571,7 @@ fn walk_docs_dir(
     }
 
     let mut dir_nodes = Vec::new();
-    if parallel && !subdirs.is_empty() {
+    if parallel {
         std::thread::scope(|scope| {
             let mut jobs = Vec::new();
             for (_, child_rel) in &subdirs {
@@ -1013,9 +1013,12 @@ fn main() {
         ));
     };
 
-    let addr = format!("{bind}:{port}");
-    let listener =
-        TcpListener::bind(&addr).unwrap_or_else(|e| die(&format!("failed to bind {addr}: {e}")));
+    let requested = format!("{bind}:{port}");
+    let listener = TcpListener::bind(&requested)
+        .unwrap_or_else(|e| die(&format!("failed to bind {requested}: {e}")));
+    let addr = listener
+        .local_addr()
+        .map_or(requested, |bound| bound.to_string());
 
     if let Some(ref name) = single_file {
         eprintln!("\tServing {}{} over HTTP on {addr}", dir.display(), name);
@@ -1082,41 +1085,25 @@ mod tests {
     }
 
     #[test]
-    fn natural_cmp_basic() {
-        assert_eq!(natural_cmp(b"a", b"b"), Ordering::Less);
-        assert_eq!(natural_cmp(b"b", b"a"), Ordering::Greater);
-        assert_eq!(natural_cmp(b"a", b"a"), Ordering::Equal);
-    }
-
-    #[test]
-    fn natural_cmp_numeric() {
-        assert_eq!(natural_cmp(b"file2", b"file10"), Ordering::Less);
-        assert_eq!(natural_cmp(b"file10", b"file2"), Ordering::Greater);
-        assert_eq!(natural_cmp(b"file1", b"file2"), Ordering::Less);
-    }
-
-    #[test]
-    fn natural_cmp_leading_zeros() {
-        assert_eq!(natural_cmp(b"file01", b"file001"), Ordering::Less);
-    }
-
-    #[test]
-    fn natural_cmp_digits_before_letters() {
-        assert_eq!(natural_cmp(b"1abc", b"abc"), Ordering::Less);
-        assert_eq!(natural_cmp(b"abc", b"1abc"), Ordering::Greater);
-    }
-
-    #[test]
-    fn natural_cmp_prefix() {
-        assert_eq!(natural_cmp(b"file", b"file1"), Ordering::Less);
-        assert_eq!(natural_cmp(b"file1", b"file"), Ordering::Greater);
-    }
-
-    #[test]
-    fn natural_cmp_empty() {
-        assert_eq!(natural_cmp(b"", b"a"), Ordering::Less);
-        assert_eq!(natural_cmp(b"a", b""), Ordering::Greater);
-        assert_eq!(natural_cmp(b"", b""), Ordering::Equal);
+    fn natural_cmp_orders_both_directions() {
+        for (a, b, expected) in [
+            ("a", "b", Ordering::Less),
+            ("a", "a", Ordering::Equal),
+            ("file2", "file10", Ordering::Less),
+            ("file1", "file2", Ordering::Less),
+            ("file01", "file001", Ordering::Less),
+            ("file1", "file01", Ordering::Less),
+            ("file0", "file00", Ordering::Less),
+            ("x007y", "x7y", Ordering::Greater),
+            ("a10b2", "a10b10", Ordering::Less),
+            ("1abc", "abc", Ordering::Less),
+            ("file", "file1", Ordering::Less),
+            ("", "a", Ordering::Less),
+            ("", "", Ordering::Equal),
+        ] {
+            assert_eq!(natural_cmp(a.as_bytes(), b.as_bytes()), expected, "{a} vs {b}");
+            assert_eq!(natural_cmp(b.as_bytes(), a.as_bytes()), expected.reverse(), "{b} vs {a}");
+        }
     }
 
     #[test]
@@ -1524,10 +1511,15 @@ mod tests {
         let (headers, body) = srv.get("/__docs__/tree");
         assert!(headers.contains("200 OK"));
         assert!(headers.contains("Content-Type: application/json; charset=utf-8"));
-        assert!(body.contains("README.md"));
-        assert!(body.contains("guide.md"));
-        assert!(!body.contains("skip.md"));
-        assert!(!body.contains("secret.md"));
+        assert_eq!(
+            body,
+            concat!(
+                r#"{"name":"/","path":"","dir":true,"children":["#,
+                r#"{"name":"docs","path":"docs","dir":true,"children":["#,
+                r#"{"name":"guide.md","path":"docs/guide.md","dir":false}]},"#,
+                r#"{"name":"README.md","path":"README.md","dir":false}]}"#,
+            )
+        );
     }
 
     #[test]
@@ -1538,6 +1530,121 @@ mod tests {
         assert!(headers.contains("Content-Type: text/html; charset=utf-8"));
         assert!(body.contains("<h1>Hello</h1>"));
         assert!(!body.contains("<html>"));
+    }
+
+    #[test]
+    fn integration_docs_markdown_rejects_bad_paths() {
+        let srv = TestServer::new_docs();
+        fs::create_dir(srv._dir.path().join("folder.md")).unwrap();
+        std::os::unix::fs::symlink(srv._dir.path().join("README.md"), srv._dir.path().join("link.md")).unwrap();
+        for (path, status) in [
+            ("/__docs__/md", 400),
+            ("/__docs__/md?path=", 400),
+            ("/__docs__/md?path=hello.txt", 400),
+            ("/__docs__/md?path=../../outside.md", 403),
+            ("/__docs__/md?path=%2E%2E%2F%2E%2E%2Foutside.md", 403),
+            ("/__docs__/md?path=missing.md", 404),
+            ("/__docs__/md?path=folder.md", 404),
+            ("/__docs__/md?path=link.md", 403),
+            ("/__docs__/md?path=docs%2Fguide.md", 200),
+        ] {
+            assert_eq!(srv.status(path), status, "{path}");
+        }
+    }
+
+    fn raw_request(srv: &TestServer, request: &[u8]) -> String {
+        let mut stream = TcpStream::connect(srv.addr).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let _ = stream.write_all(request);
+        let mut resp = String::new();
+        let _ = stream.read_to_string(&mut resp);
+        resp
+    }
+
+    #[test]
+    fn integration_malformed_and_oversized_requests_are_rejected() {
+        let srv = TestServer::new();
+        assert_eq!(
+            raw_request(&srv, b"NOT A REQUEST\r\n\r\n"),
+            "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\nContent-Length: 15\r\n\
+             Cache-Control: no-store\r\nConnection: close\r\n\r\n400 Bad Request"
+        );
+        let mut oversized = b"GET / HTTP/1.1\r\nX-Pad: ".to_vec();
+        oversized.resize(9000, b'a');
+        assert!(raw_request(&srv, &oversized).starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n"));
+        assert_eq!(srv.status("/hello.txt"), 200);
+    }
+
+    #[test]
+    fn integration_symlinked_and_special_files_are_forbidden() {
+        let srv = TestServer::new();
+        std::os::unix::fs::symlink(srv._dir.path().join("hello.txt"), srv._dir.path().join("link.txt")).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(srv._dir.path().join("socket")).unwrap();
+        let (headers, body) = srv.get("/link.txt");
+        assert!(headers.starts_with("HTTP/1.1 403"), "{headers}");
+        assert_eq!(body, "403 Forbidden: symlinks not served");
+        let (headers, body) = srv.get("/socket");
+        assert!(headers.starts_with("HTTP/1.1 403"), "{headers}");
+        assert_eq!(body, "403 Forbidden: not a regular file or directory");
+    }
+
+    #[test]
+    fn ignore_rules_follow_the_supported_gitignore_subset() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(".gitignore"),
+            "# comment\n!keep\n./build/\n/anchored\nnested/dir\n*.tmp\n\n",
+        )
+        .unwrap();
+        let rules = read_ignore_rules(dir.path());
+        for (rel, name, ignored) in [
+            ("build", "build", true),
+            ("x/build", "build", true),
+            ("anchored", "anchored", true),
+            ("anchored/sub", "sub", true),
+            ("x/anchored", "anchored", false),
+            ("nested/dir", "dir", true),
+            ("a/nested/dir", "dir", true),
+            ("dir", "dir", false),
+            ("cache.tmp", "cache.tmp", true),
+            ("keep", "keep", false),
+            ("!keep", "!keep", false),
+            ("# comment", "# comment", false),
+        ] {
+            assert_eq!(is_gitignored_dir(rel, name, &rules), ignored, "{rel}");
+        }
+        assert!(read_ignore_rules(&dir.path().join("absent")).patterns.is_empty());
+    }
+
+    #[test]
+    fn glob_match_backtracks_over_stars() {
+        for (pattern, text, matched) in [
+            ("a*c", "abbbc", true),
+            ("a*c", "abbbd", false),
+            ("a*b*c", "axbyc", true),
+            ("a*b*c", "axbyd", false),
+            ("a?c", "abc", true),
+            ("a?c", "ac", false),
+            ("**", "", true),
+            ("ab*", "a", false),
+            ("*.md", "x.md", true),
+        ] {
+            assert_eq!(glob_match(pattern, text), matched, "{pattern} {text}");
+        }
+    }
+
+    #[test]
+    fn json_string_escapes_quotes_backslashes_and_controls() {
+        let mut out = String::new();
+        json_string("a\"b\\c\nd\re\tf\u{1}g", &mut out);
+        assert_eq!(out, r#""a\"b\\c\nd\re\tf\u0001g""#);
+    }
+
+    #[test]
+    fn percent_decode_replaces_invalid_utf8() {
+        assert_eq!(percent_decode("a%FFb"), "a\u{FFFD}b");
     }
 
     #[test]

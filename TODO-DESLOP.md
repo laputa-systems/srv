@@ -1,5 +1,5 @@
 Prefix: DSLP
-Next: 9
+Next: 10
 
 Deslop campaign backlog ([plan](https://github.com/laputa-systems/stuff/blob/main/docs/campaigns/deslop.md)). One agent works this file: take the lowest-numbered open ticket whose area does not start with `Needs owner ·`. After DSLP-5, work the open P1 and P2 findings, then fill in `## Report` below.
 
@@ -8,15 +8,6 @@ Deslop campaign backlog ([plan](https://github.com/laputa-systems/stuff/blob/mai
 Not started.
 
 ## Tickets
-
-### DSLP-4 · P2 · Tests: coverage, boundary gaps, mutation
-
-- **Area:** deslop · tests
-- **Where:** src/main.rs tests, tests/
-- **Problem:** The CLI flags (-p, -b, -q, a missing value, a bad path exiting 1) have no test; main() is only exercised through --help and --version.
-- **Recommendation:** Run the deslop Tests step. Accept: no undispositioned survivor in the critical scope, the test cost budget holds, and the mutation lane is green.
-- **Fix with:** deslop
-- **Effort:** M
 
 ### DSLP-5 · P2 · Dead code: tools and debloat
 
@@ -45,5 +36,12 @@ Not started.
 - **Fix with:** none
 - **Effort:** S
 
+### DSLP-9 · P2 · A path beneath a regular file gets no HTTP response
 
+- **Area:** Serving
+- **Where:** src/main.rs:846 (Server::dispatch), src/main.rs:930 (Server::serve_docs_markdown)
+- **Problem:** symlink_metadata on /file.txt/x fails with NotADirectory, not NotFound, so dispatch returns the io::Error and srv closes the connection without a status line. Reproduced: GET /a.txt/x got an empty reply while GET /missing/x got 404. Found by mutation testing: replacing the NotFound guard with true survived because no test requests such a path.
+- **Recommendation:** Map NotFound and NotADirectory to 404 in both handlers (other errors still propagate), with a boundary test for /hello.txt/x in each mode that fails before the fix.
+- **Fix with:** error-model
+- **Effort:** S
 
