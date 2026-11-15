@@ -59,7 +59,7 @@ jobs:
           - runner: xcode-27
             target: aarch64-apple-darwin
             docker_platform: ''
-          - runner: ubuntu-26.04-arm
+          - runner: ubuntu-26.04
             target: x86_64-unknown-linux-musl
             docker_platform: linux/amd64
           - runner: ubuntu-26.04-arm
