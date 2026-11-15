@@ -1013,9 +1013,12 @@ fn main() {
         ));
     };
 
-    let addr = format!("{bind}:{port}");
-    let listener =
-        TcpListener::bind(&addr).unwrap_or_else(|e| die(&format!("failed to bind {addr}: {e}")));
+    let requested = format!("{bind}:{port}");
+    let listener = TcpListener::bind(&requested)
+        .unwrap_or_else(|e| die(&format!("failed to bind {requested}: {e}")));
+    let addr = listener
+        .local_addr()
+        .map_or(requested, |bound| bound.to_string());
 
     if let Some(ref name) = single_file {
         eprintln!("\tServing {}{} over HTTP on {addr}", dir.display(), name);
