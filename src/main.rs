@@ -326,6 +326,12 @@ fn normalize_into(base: &Path, raw: &str, out: &mut PathBuf) -> bool {
     out.starts_with(base)
 }
 
+/// A request path names nothing when a component is missing or is a file
+/// used as a directory.
+fn is_missing(error: &io::Error) -> bool {
+    matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
+}
+
 fn mime(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "html" | "htm" => "text/html; charset=utf-8",
@@ -843,7 +849,7 @@ impl Server {
 
         let meta = match fs::symlink_metadata(self.fp.as_path()) {
             Ok(m) => m,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            Err(e) if is_missing(&e) => {
                 return write_error(sock, 404, "Not Found");
             }
             Err(e) => return Err(e),
@@ -927,7 +933,7 @@ impl Server {
         }
         let meta = match fs::symlink_metadata(&self.fp) {
             Ok(m) => m,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            Err(e) if is_missing(&e) => {
                 return write_error(sock, 404, "Not Found");
             }
             Err(e) => return Err(e),
@@ -1575,6 +1581,14 @@ mod tests {
         oversized.resize(9000, b'a');
         assert!(raw_request(&srv, &oversized).starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n"));
         assert_eq!(srv.status("/hello.txt"), 200);
+    }
+
+    #[test]
+    fn integration_a_path_beneath_a_file_is_not_found() {
+        let srv = TestServer::new();
+        assert_eq!(srv.status("/hello.txt/x"), 404);
+        let docs = TestServer::new_docs();
+        assert_eq!(docs.status("/__docs__/md?path=README.md/x.md"), 404);
     }
 
     #[test]
