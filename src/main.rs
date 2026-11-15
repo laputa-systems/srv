@@ -387,10 +387,6 @@ fn render_markdown(markdown: &str, html_out: &mut String) {
     html_out.push_str(MARKDOWN_POSTLUDE);
 }
 
-fn is_hidden_dir_name(name: &str) -> bool {
-    name.starts_with('.')
-}
-
 fn glob_match(pattern: &str, text: &str) -> bool {
     let p = pattern.as_bytes();
     let t = text.as_bytes();
@@ -520,7 +516,7 @@ fn node_to_json(node: &DocsNode, out: &mut String) {
 }
 
 fn rel_to_web_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    path.to_string_lossy().into_owned()
 }
 
 fn walk_docs_dir(
@@ -553,7 +549,7 @@ fn walk_docs_dir(
         };
         let ft = meta.file_type();
         if ft.is_dir() {
-            if is_hidden_dir_name(&name) {
+            if name.starts_with('.') {
                 continue;
             }
             let child_rel = rel.join(&name);
@@ -780,6 +776,10 @@ fn render_listing(dir: &Path, html: &mut String) -> io::Result<()> {
     Ok(())
 }
 
+/// Browsers send about 20 headers; more than this answers 431 like an
+/// oversized request.
+const MAX_HEADERS: usize = 100;
+
 struct Server {
     dir: PathBuf,
     quiet: bool,
@@ -803,7 +803,7 @@ impl Server {
                 return Ok(());
             }
             pos += n;
-            let mut hdrs = [httparse::EMPTY_HEADER; 16];
+            let mut hdrs = [httparse::EMPTY_HEADER; MAX_HEADERS];
             let mut req = httparse::Request::new(&mut hdrs);
             match req.parse(&buf[..pos]) {
                 Ok(httparse::Status::Complete(_)) => {
@@ -814,6 +814,9 @@ impl Server {
                     );
                 }
                 Ok(httparse::Status::Partial) => continue,
+                Err(httparse::Error::TooManyHeaders) => {
+                    return write_error(&stream, 431, "Request Header Fields Too Large");
+                }
                 Err(_) => return write_error(&stream, 400, "Bad Request"),
             }
         }
@@ -1529,6 +1532,17 @@ mod tests {
     }
 
     #[test]
+    fn integration_docs_tree_keeps_backslashes_in_file_names() {
+        let srv = TestServer::new_docs();
+        fs::write(srv._dir.path().join("a\\b.md"), "# Backslash").unwrap();
+        let (_, tree) = srv.get("/__docs__/tree");
+        assert!(tree.contains(r#"{"name":"a\\b.md","path":"a\\b.md","dir":false}"#), "{tree}");
+        let (headers, body) = srv.get("/__docs__/md?path=a%5Cb.md");
+        assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+        assert!(body.contains("<h1>Backslash</h1>"));
+    }
+
+    #[test]
     fn integration_docs_mode_markdown_fragment() {
         let srv = TestServer::new_docs();
         let (headers, body) = srv.get("/__docs__/md?path=README.md");
@@ -1609,6 +1623,26 @@ mod tests {
         }
         assert_ne!(srv_status, 404, "a permission error is not a missing path");
         assert_ne!(docs_status, 404, "a permission error is not a missing path");
+    }
+
+    #[test]
+    fn integration_a_browser_sized_header_set_is_accepted() {
+        let srv = TestServer::new();
+        let mut request = String::from("GET /hello.txt HTTP/1.1\r\nHost: localhost\r\n");
+        for index in 0..40 {
+            request.push_str(&format!("X-Header-{index}: value\r\n"));
+        }
+        request.push_str("\r\n");
+        let response = raw_request(&srv, request.as_bytes());
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(response.ends_with("\r\n\r\nhello world"), "{response}");
+
+        let mut flood = String::from("GET /hello.txt HTTP/1.1\r\n");
+        for index in 0..=MAX_HEADERS {
+            flood.push_str(&format!("X-{index}: v\r\n"));
+        }
+        flood.push_str("\r\n");
+        assert!(raw_request(&srv, flood.as_bytes()).starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n"));
     }
 
     #[test]
