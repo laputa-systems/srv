@@ -336,7 +336,7 @@ fn mime(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "html" | "htm" => "text/html; charset=utf-8",
         "css" => "text/css",
-        "js" | "mjs" => "application/javascript",
+        "js" | "mjs" => "text/javascript",
         "json" => "application/json",
         "xml" => "application/xml",
         "txt" | "md" => "text/plain; charset=utf-8",
@@ -350,7 +350,7 @@ fn mime(path: &Path) -> &'static str {
         "webm" => "video/webm",
         "mp3" => "audio/mpeg",
         "ogg" => "audio/ogg",
-        "wav" => "audio/wav",
+        "wav" => "audio/wave",
         "pdf" => "application/pdf",
         "wasm" => "application/wasm",
         "zip" => "application/zip",
@@ -1274,14 +1274,14 @@ mod tests {
     fn mime_extension_contract() {
         let cases = [
             ("html", "text/html; charset=utf-8"), ("htm", "text/html; charset=utf-8"),
-            ("css", "text/css"), ("js", "application/javascript"),
-            ("mjs", "application/javascript"), ("json", "application/json"),
+            ("css", "text/css"), ("js", "text/javascript"),
+            ("mjs", "text/javascript"), ("json", "application/json"),
             ("xml", "application/xml"), ("txt", "text/plain; charset=utf-8"),
             ("md", "text/plain; charset=utf-8"), ("png", "image/png"),
             ("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("gif", "image/gif"),
             ("svg", "image/svg+xml"), ("ico", "image/x-icon"), ("webp", "image/webp"),
             ("mp4", "video/mp4"), ("webm", "video/webm"), ("mp3", "audio/mpeg"),
-            ("ogg", "audio/ogg"), ("wav", "audio/wav"), ("pdf", "application/pdf"),
+            ("ogg", "audio/ogg"), ("wav", "audio/wave"), ("pdf", "application/pdf"),
             ("wasm", "application/wasm"), ("zip", "application/zip"),
             ("gz", "application/gzip"), ("tgz", "application/gzip"),
         ];
@@ -1294,7 +1294,7 @@ mod tests {
     fn mime_known() {
         assert_eq!(mime(Path::new("f.html")), "text/html; charset=utf-8");
         assert_eq!(mime(Path::new("f.css")), "text/css");
-        assert_eq!(mime(Path::new("f.js")), "application/javascript");
+        assert_eq!(mime(Path::new("f.js")), "text/javascript");
         assert_eq!(mime(Path::new("f.png")), "image/png");
         assert_eq!(mime(Path::new("f.pdf")), "application/pdf");
     }
