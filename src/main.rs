@@ -1592,6 +1592,26 @@ mod tests {
     }
 
     #[test]
+    fn integration_an_unsearchable_directory_is_not_reported_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let srv = TestServer::new();
+        let docs = TestServer::new_docs();
+        for root in [srv._dir.path(), docs._dir.path()] {
+            let locked = root.join("locked.md");
+            fs::create_dir(&locked).unwrap();
+            fs::write(locked.join("x.md"), "# x").unwrap();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let srv_status = srv.status("/locked.md/x.md");
+        let docs_status = docs.status("/__docs__/md?path=locked.md/x.md");
+        for root in [srv._dir.path(), docs._dir.path()] {
+            fs::set_permissions(root.join("locked.md"), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_ne!(srv_status, 404, "a permission error is not a missing path");
+        assert_ne!(docs_status, 404, "a permission error is not a missing path");
+    }
+
+    #[test]
     fn integration_symlinked_and_special_files_are_forbidden() {
         let srv = TestServer::new();
         std::os::unix::fs::symlink(srv._dir.path().join("hello.txt"), srv._dir.path().join("link.txt")).unwrap();
