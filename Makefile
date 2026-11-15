@@ -9,7 +9,7 @@ comma      := ,
 RELEASE_RUSTFLAGS := -Zlocation-detail=none -Zunstable-options -Cpanic=immediate-abort $(if $(findstring apple-darwin,$(TARGET)),-Clink-arg=-Wl$(comma)-dead_strip_dylibs)
 cargo = $(if $(findstring -linux-musl,$(TARGET)),,$(if $(filter release-static test,$(1)),CARGO_TARGET_$(TARGET_ENV)_LINKER=clang ,)$(if $(filter release-static,$(1)),RUSTFLAGS="$(RELEASE_RUSTFLAGS)")) MUSL_TARGET="$(TARGET)" MUSL_BUILD_MODE="$(1)" $(CARGO_CMD)
 
-.PHONY: build test test-ci lint release verify-release install
+.PHONY: build test test-ci lint coverage mutants-diff release verify-release install
 
 build:
 	$(call cargo,dev) build
@@ -22,6 +22,27 @@ test-ci:
 
 lint:
 	cargo clippy --all-targets --all-features -- --deny warnings
+
+# Coverage is a report for finding unreached code, never a gate.
+coverage:
+	cargo llvm-cov --branch --html --output-dir .work/coverage
+	cargo llvm-cov report --branch --summary-only
+
+# Mutation-test the Rust lines changed since BASE. A diff that changes only
+# tests selects no mutants, so it tests every mutant in the crate instead.
+BASE    ?= origin/main
+MUTANTS := cargo mutants --baseline run --timeout 60 --build-timeout 300 --output .work/mutants
+mutants-diff:
+	mkdir -p .work/mutants
+	git diff --merge-base "$(BASE)" -- '*.rs' > .work/mutants/pr.diff
+	if [ ! -s .work/mutants/pr.diff ]; then \
+	  echo "no Rust changes against $(BASE)"; \
+	elif [ -n "$$(cargo mutants --list --in-diff .work/mutants/pr.diff)" ]; then \
+	  $(MUTANTS) --in-diff .work/mutants/pr.diff; \
+	else \
+	  echo "the diff changes only tests; testing every mutant in the crate"; \
+	  $(MUTANTS); \
+	fi
 
 release:
 	$(call cargo,release-static) clean -p $(NAME) --profile dist --target $(TARGET)
