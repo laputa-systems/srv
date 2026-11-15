@@ -387,10 +387,6 @@ fn render_markdown(markdown: &str, html_out: &mut String) {
     html_out.push_str(MARKDOWN_POSTLUDE);
 }
 
-fn is_hidden_dir_name(name: &str) -> bool {
-    name.starts_with('.')
-}
-
 fn glob_match(pattern: &str, text: &str) -> bool {
     let p = pattern.as_bytes();
     let t = text.as_bytes();
@@ -553,7 +549,7 @@ fn walk_docs_dir(
         };
         let ft = meta.file_type();
         if ft.is_dir() {
-            if is_hidden_dir_name(&name) {
+            if name.starts_with('.') {
                 continue;
             }
             let child_rel = rel.join(&name);
