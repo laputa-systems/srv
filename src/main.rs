@@ -571,7 +571,7 @@ fn walk_docs_dir(
     }
 
     let mut dir_nodes = Vec::new();
-    if parallel && !subdirs.is_empty() {
+    if parallel {
         std::thread::scope(|scope| {
             let mut jobs = Vec::new();
             for (_, child_rel) in &subdirs {
