@@ -9,7 +9,7 @@ comma      := ,
 RELEASE_RUSTFLAGS := -Zlocation-detail=none -Zunstable-options -Cpanic=immediate-abort $(if $(findstring apple-darwin,$(TARGET)),-Clink-arg=-Wl$(comma)-dead_strip_dylibs)
 cargo = $(if $(findstring -linux-musl,$(TARGET)),,$(if $(filter release-static test,$(1)),CARGO_TARGET_$(TARGET_ENV)_LINKER=clang ,)$(if $(filter release-static,$(1)),RUSTFLAGS="$(RELEASE_RUSTFLAGS)")) MUSL_TARGET="$(TARGET)" MUSL_BUILD_MODE="$(1)" $(CARGO_CMD)
 
-.PHONY: build test test-ci lint coverage mutants-diff release verify-release install
+.PHONY: build test test-ci lint coverage mutants-selftest mutants-diff release verify-release install
 
 build:
 	$(call cargo,dev) build
@@ -28,29 +28,13 @@ coverage:
 	cargo llvm-cov --branch --html --output-dir .work/coverage
 	cargo llvm-cov report --branch --summary-only
 
-# Mutation-test the Rust lines changed since BASE. A diff that changes only
-# tests selects no mutants, so it tests every mutant in the crate instead.
-# cargo-mutants exits 3 when mutants only timed out and none were missed: a
-# mutant that hangs the suite is one the suite detected, so that status passes.
-BASE    ?= origin/main
-MUTANTS := cargo mutants --baseline run --timeout 10 --build-timeout 300 --output .work/mutants
-mutants-diff:
-	mkdir -p .work/mutants
-	git diff --merge-base "$(BASE)" -- '*.rs' > .work/mutants/pr.diff
-	if [ ! -s .work/mutants/pr.diff ]; then \
-	  echo "no Rust changes against $(BASE)"; exit 0; \
-	elif [ -n "$$(cargo mutants --list --in-diff .work/mutants/pr.diff)" ]; then \
-	  $(MUTANTS) --in-diff .work/mutants/pr.diff; status=$$?; \
-	else \
-	  echo "the diff changes only tests; testing every mutant in the crate"; \
-	  $(MUTANTS); status=$$?; \
-	fi; \
-	if [ $$status -eq 3 ]; then \
-	  echo "only timeouts, each a hang the suite detected:"; \
-	  cat .work/mutants/mutants.out/timeout.txt; \
-	  exit 0; \
-	fi; \
-	exit $$status
+BASE ?= origin/main
+
+mutants-selftest:
+	python3 -B -m unittest discover -s scripts -p 'test_mutants_gate.py'
+
+mutants-diff: mutants-selftest
+	python3 -B scripts/mutants_gate.py "$(BASE)"
 
 release:
 	$(call cargo,release-static) clean -p $(NAME) --profile dist --target $(TARGET)

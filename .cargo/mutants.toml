@@ -1,11 +1,7 @@
-# Each exclusion names a mutant no test can tell from the original, or table
-# data that a test could only restate. Everything else stays in scope.
+# Equivalent
 exclude_re = [
     # (h << 4) has a zero low nibble and l < 16, so | and ^ build the same byte.
     'replace \| with \^ in percent_decode',
-    # i = star_i re-enters the * branch on the next iteration, which reaches the
-    # same state as i = star_i + 1.
+    # Re-entering the star branch with i = star_i reaches the same state as i = star_i + 1.
     'replace \+ with \* in glob_match',
-    # Each arm is one literal extension-to-type row; mime_known checks the lookup.
-    'delete match arm .* in mime',
 ]
