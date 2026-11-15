@@ -38,12 +38,4 @@ Shared-file gaps: F3 should generate the `coverage` and `mutants-diff` targets a
 
 ## Tickets
 
-### DSLP-10 · P3 · Two served Content-Types disagree with their registrations
-
-- **Area:** Needs owner · HTTP
-- **Where:** src/main.rs:335 (mime)
-- **Problem:** mime() serves .js and .mjs as application/javascript, which the IANA media-type registry marks obsolete in favor of text/javascript (RFC 9239), and .wav as audio/wav, which IANA does not register (WHATWG MIME Sniffing names audio/wave; audio/vnd.wave is registered). The contract test mime_extension_contract asserts current behavior for those rows so the deslop gate change did not alter served headers.
-- **Recommendation:** Owner: approve serving text/javascript for .js/.mjs and audio/wave (or audio/vnd.wave) for .wav; then change the rows and the contract test together.
-- **Fix with:** none
-- **Effort:** S
 
