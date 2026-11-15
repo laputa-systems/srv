@@ -36,12 +36,4 @@ Not started.
 - **Fix with:** none
 - **Effort:** S
 
-### DSLP-9 · P2 · A path beneath a regular file gets no HTTP response
-
-- **Area:** Serving
-- **Where:** src/main.rs:846 (Server::dispatch), src/main.rs:930 (Server::serve_docs_markdown)
-- **Problem:** symlink_metadata on /file.txt/x fails with NotADirectory, not NotFound, so dispatch returns the io::Error and srv closes the connection without a status line. Reproduced: GET /a.txt/x got an empty reply while GET /missing/x got 404. Found by mutation testing: replacing the NotFound guard with true survived because no test requests such a path.
-- **Recommendation:** Map NotFound and NotADirectory to 404 in both handlers (other errors still propagate), with a boundary test for /hello.txt/x in each mode that fails before the fix.
-- **Fix with:** error-model
-- **Effort:** S
 
