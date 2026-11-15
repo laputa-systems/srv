@@ -9,14 +9,3 @@ Not started.
 
 ## Tickets
 
-### DSLP-6 · P2 · One idle connection stalls every other request
-
-- **Area:** Serving
-- **Where:** src/main.rs:849 (Server::handle reads with no timeout), src/main.rs:1095 (sequential accept loop)
-- **Problem:** The accept loop handles one connection at a time and Server::handle blocks in stream.read with no timeout. A client that connects and sends nothing (a browser preconnect, a stalled tab) blocks every later request indefinitely. Reproduced: with one idle connection open, a second GET got no response within 3s.
-- **Recommendation:** Bound the wait for a request (a read timeout that answers 408 or closes) and stop one connection from serializing the rest, for example a scoped thread per connection. Add a boundary test that holds an idle connection open and requires a second request to succeed.
-- **Fix with:** lifecycle-concurrency
-- **Effort:** S
-
-
-

@@ -780,6 +780,10 @@ fn render_listing(dir: &Path, html: &mut String) -> io::Result<()> {
 /// oversized request.
 const MAX_HEADERS: usize = 100;
 
+/// How long a connection may take to send its request before srv drops it.
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Clone)]
 struct Server {
     dir: PathBuf,
     quiet: bool,
@@ -793,6 +797,7 @@ impl Server {
     fn handle(&mut self, mut stream: TcpStream) -> io::Result<()> {
         let mut buf = [0u8; 8192];
         let mut pos = 0usize;
+        stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
 
         loop {
             if pos == buf.len() {
@@ -1035,7 +1040,7 @@ fn main() {
         eprintln!("\tServing {} over HTTP on {addr}", dir.display());
     }
 
-    let mut srv = Server {
+    let srv = Server {
         dir,
         quiet,
         docs_mode,
@@ -1047,9 +1052,12 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
-                if let Err(e) = srv.handle(s) {
-                    eprintln!("error: {e}");
-                }
+                let mut connection = srv.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = connection.handle(s) {
+                        eprintln!("error: {e}");
+                    }
+                });
             }
             Err(e) => eprintln!("accept error: {e}"),
         }
