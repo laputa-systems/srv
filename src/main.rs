@@ -6,7 +6,6 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
-    os::unix::io::AsRawFd,
     path::{Path, PathBuf},
 };
 
@@ -647,69 +646,8 @@ fn query_param(path_raw: &str, key: &str) -> Option<String> {
     None
 }
 
-#[cfg(target_os = "macos")]
-fn send_file(file: &File, sock: &TcpStream, len: u64) -> io::Result<()> {
-    unsafe extern "C" {
-        fn sendfile(fd: i32, s: i32, offset: i64, len: *mut i64, hdtr: *mut (), flags: i32) -> i32;
-    }
-    let mut remaining = len as i64;
-    let mut offset: i64 = 0;
-    while remaining > 0 {
-        let mut chunk = remaining;
-        let ret = unsafe {
-            sendfile(
-                file.as_raw_fd(),
-                sock.as_raw_fd(),
-                offset,
-                &mut chunk,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        if chunk > 0 {
-            offset += chunk;
-            remaining -= chunk;
-        } else if ret == 0 {
-            break;
-        }
-        if ret == -1 {
-            let e = io::Error::last_os_error();
-            if e.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(e);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn send_file(file: &File, sock: &TcpStream, len: u64) -> io::Result<()> {
-    unsafe extern "C" {
-        fn sendfile(out_fd: i32, in_fd: i32, offset: *mut i64, count: usize) -> isize;
-    }
-    let mut offset: i64 = 0;
-    let mut remaining = len as usize;
-    while remaining > 0 {
-        let n = unsafe { sendfile(sock.as_raw_fd(), file.as_raw_fd(), &mut offset, remaining) };
-        if n == -1 {
-            let e = io::Error::last_os_error();
-            if e.kind() == io::ErrorKind::Interrupted {
-                continue;
-            }
-            return Err(e);
-        }
-        if n == 0 {
-            break;
-        }
-        remaining -= n as usize;
-    }
-    Ok(())
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn send_file(file: &File, sock: &TcpStream, _len: u64) -> io::Result<()> {
-    io::copy(&mut file.try_clone()?, &mut sock.try_clone()?)?;
+fn send_file(file: &File, mut sock: &TcpStream, len: u64) -> io::Result<()> {
+    io::copy(&mut file.take(len), &mut sock)?;
     Ok(())
 }
 
@@ -1740,7 +1678,7 @@ mod tests {
             let file = File::open(&path).unwrap();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
-            let (tx, _rx) = channel();
+            let (tx, rx) = channel();
             let reader = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
@@ -1756,22 +1694,24 @@ mod tests {
             });
             let result = writer.join().expect("send_file thread panicked");
             let _ = reader.join();
-            result
+            (result, rx.recv().unwrap_or_default())
         };
 
         let (tx, rx) = channel();
         std::thread::scope(|s| {
             s.spawn(|| {
-                tx.send(run_once(stale_len)).unwrap();
+                tx.send(run_once(stale_len).0).unwrap();
             });
             let result = rx
                 .recv_timeout(Duration::from_secs(10))
-                .expect("truncated send_file did not return; loop spins on 0-byte sendfile");
+                .expect("truncated send_file did not return");
             result.unwrap();
         });
 
-        fs::write(&path, "alive").unwrap();
-        run_once(5).unwrap();
+        fs::write(&path, "alive and longer").unwrap();
+        let (result, received) = run_once(5);
+        result.unwrap();
+        assert_eq!(received, b"alive", "send_file must stop at the advertised length");
 
         let srv = TestServer::new();
         assert_eq!(srv.status("/hello.txt"), 200);

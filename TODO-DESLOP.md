@@ -9,16 +9,6 @@ Not started.
 
 ## Tickets
 
-### DSLP-3 · P2 · Types: strict profile and typing findings
-
-- **Area:** deslop · types
-- **Where:** Cargo.toml [lints], src/main.rs
-- **Problem:** No workspace lints beyond clippy -D warnings; unsafe sendfile FFI is allowed.
-- **Recommendation:** Run the deslop Types step. Accept: clean at the strict profile, escape hatches not increased, witnesses recorded.
-- **Fix with:** deslop
-- **Effort:** S
-
-
 ### DSLP-4 · P2 · Tests: coverage, boundary gaps, mutation
 
 - **Area:** deslop · tests
@@ -27,7 +17,6 @@ Not started.
 - **Recommendation:** Run the deslop Tests step. Accept: no undispositioned survivor in the critical scope, the test cost budget holds, and the mutation lane is green.
 - **Fix with:** deslop
 - **Effort:** M
-
 
 ### DSLP-5 · P2 · Dead code: tools and debloat
 
@@ -38,7 +27,6 @@ Not started.
 - **Fix with:** deslop
 - **Effort:** S
 
-
 ### DSLP-6 · P2 · One idle connection stalls every other request
 
 - **Area:** Serving
@@ -47,7 +35,6 @@ Not started.
 - **Recommendation:** Bound the wait for a request (a read timeout that answers 408 or closes) and stop one connection from serializing the rest, for example a scoped thread per connection. Add a boundary test that holds an idle connection open and requires a second request to succeed.
 - **Fix with:** lifecycle-concurrency
 - **Effort:** S
-
 
 ### DSLP-7 · P2 · Requests with more than 16 headers get 400 Bad Request
 
@@ -59,12 +46,4 @@ Not started.
 - **Effort:** S
 
 
-### DSLP-8 · P3 · Hand-declared sendfile FFI is the only unsafe code
-
-- **Area:** OS boundary
-- **Where:** src/main.rs:650-708
-- **Problem:** send_file declares libc sendfile by hand for macOS and Linux in unsafe blocks. The signatures are unchecked against the platform headers, and srv has no throughput requirement (AGENTS.md declares no performance workload) that the copy avoidance pays for.
-- **Recommendation:** Replace both with std::io::copy from the File to the TcpStream (std already uses sendfile or splice on Linux) and forbid unsafe_code in the crate; keep the truncated-send test green.
-- **Fix with:** os-boundaries
-- **Effort:** S
 
