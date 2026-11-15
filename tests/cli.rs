@@ -151,3 +151,19 @@ fn docs_flag_serves_the_docs_browser() {
     assert!(running.get("/__docs__/tree").ends_with(r#"[{"name":"a.md","path":"a.md","dir":false}]}"#));
     running.stop();
 }
+
+#[test]
+fn an_idle_connection_does_not_stall_other_requests() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha").unwrap();
+    let running = Running::start(&["-q", dir.path().to_str().unwrap()]);
+
+    let _idle = TcpStream::connect(("127.0.0.1", running.port)).unwrap();
+    let mut stream = TcpStream::connect(("127.0.0.1", running.port)).unwrap();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    write!(stream, "GET /a.txt HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+    let mut response = String::new();
+    let _ = stream.read_to_string(&mut response);
+    assert!(response.ends_with("\r\n\r\nalpha"), "no response while another connection idles: {response:?}");
+    running.stop();
+}
