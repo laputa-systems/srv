@@ -1271,6 +1271,26 @@ mod tests {
     }
 
     #[test]
+    fn mime_extension_contract() {
+        let cases = [
+            ("html", "text/html; charset=utf-8"), ("htm", "text/html; charset=utf-8"),
+            ("css", "text/css"), ("js", "application/javascript"),
+            ("mjs", "application/javascript"), ("json", "application/json"),
+            ("xml", "application/xml"), ("txt", "text/plain; charset=utf-8"),
+            ("md", "text/plain; charset=utf-8"), ("png", "image/png"),
+            ("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("gif", "image/gif"),
+            ("svg", "image/svg+xml"), ("ico", "image/x-icon"), ("webp", "image/webp"),
+            ("mp4", "video/mp4"), ("webm", "video/webm"), ("mp3", "audio/mpeg"),
+            ("ogg", "audio/ogg"), ("wav", "audio/wav"), ("pdf", "application/pdf"),
+            ("wasm", "application/wasm"), ("zip", "application/zip"),
+            ("gz", "application/gzip"), ("tgz", "application/gzip"),
+        ];
+        for (extension, expected) in cases {
+            assert_eq!(mime(Path::new(&format!("file.{extension}"))), expected, "{extension}");
+        }
+    }
+
+    #[test]
     fn mime_known() {
         assert_eq!(mime(Path::new("f.html")), "text/html; charset=utf-8");
         assert_eq!(mime(Path::new("f.css")), "text/css");

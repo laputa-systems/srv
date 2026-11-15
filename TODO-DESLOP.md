@@ -1,5 +1,5 @@
 Prefix: DSLP
-Next: 10
+Next: 11
 
 Deslop campaign backlog ([plan](https://github.com/laputa-systems/stuff/blob/main/docs/campaigns/deslop.md)). One agent works this file: take the lowest-numbered open ticket whose area does not start with `Needs owner ·`. After DSLP-5, work the open P1 and P2 findings, then fill in `## Report` below.
 
@@ -37,4 +37,13 @@ Method feedback:
 Shared-file gaps: F3 should generate the `coverage` and `mutants-diff` targets and the lane, because every Rust repository needs the same Makefile block.
 
 ## Tickets
+
+### DSLP-10 · P3 · Two served Content-Types disagree with their registrations
+
+- **Area:** Needs owner · HTTP
+- **Where:** src/main.rs:335 (mime)
+- **Problem:** mime() serves .js and .mjs as application/javascript, which the IANA media-type registry marks obsolete in favor of text/javascript (RFC 9239), and .wav as audio/wav, which IANA does not register (WHATWG MIME Sniffing names audio/wave; audio/vnd.wave is registered). The contract test mime_extension_contract asserts current behavior for those rows so the deslop gate change did not alter served headers.
+- **Recommendation:** Owner: approve serving text/javascript for .js/.mjs and audio/wave (or audio/vnd.wave) for .wav; then change the rows and the contract test together.
+- **Fix with:** none
+- **Effort:** S
 

@@ -1,0 +1,6 @@
+scope = ["src/main.rs"]
+irrelevant = ["*.md", "LICENSE", "LICENSE.*"]
+budget_seconds = 900
+timeout_seconds = 10
+build_timeout_seconds = 300
+jobs = 4

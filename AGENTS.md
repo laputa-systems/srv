@@ -32,7 +32,7 @@ Boundaries and their guards:
 - A truncated send keeps the server alive: `send_file_truncated_returns_and_server_stays_live`.
 - `-h`, `--help`, `--version`: `tests/help.rs` and `tests/cli.rs`.
 - `-p`, `-b`, `-q`, `--docs`, a file argument, usage errors and an occupied port (exit 1), the idle-connection and connection-cap behavior: `tests/cli.rs`.
-- `make coverage` reports branch coverage; `make mutants-diff` mutation-tests the diff against `BASE` and runs in CI.
+- `make coverage` reports branch coverage. `make mutants-diff BASE=<ref>` (CI's mutation lane, Python 3.11+ for `tomllib`) runs `scripts/mutants_gate.py`: it classifies every changed path, mutates changed production lines plus the bounded scope in `.cargo/mutants-gate.toml` whenever tests, fixtures, build configuration or the gate change, reruns timeouts at 3x to confirm hangs, and fails on missed mutants, unresolved timeouts, missing results, empty relevant selection, or budget exhaustion. `make mutants-selftest` runs its negative fixtures first. A full-scope run takes about 9 minutes on an M-series Mac.
 - Release artifact names: `release_artifact_names_match_docs`.
 
 Performance workload: none. srv serves one response per connection for local browsing, and no caller depends on its throughput.
