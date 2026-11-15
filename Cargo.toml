@@ -9,6 +9,9 @@ license = "MIT"
 httparse = "1"
 pulldown-cmark = "0.13"
 
+[lints.rust]
+unsafe_code = "forbid"
+
 [dev-dependencies]
 tempfile = "3"
 
