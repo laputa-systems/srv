@@ -516,7 +516,7 @@ fn node_to_json(node: &DocsNode, out: &mut String) {
 }
 
 fn rel_to_web_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    path.to_string_lossy().into_owned()
 }
 
 fn walk_docs_dir(
@@ -1522,6 +1522,17 @@ mod tests {
                 r#"{"name":"README.md","path":"README.md","dir":false}]}"#,
             )
         );
+    }
+
+    #[test]
+    fn integration_docs_tree_keeps_backslashes_in_file_names() {
+        let srv = TestServer::new_docs();
+        fs::write(srv._dir.path().join("a\\b.md"), "# Backslash").unwrap();
+        let (_, tree) = srv.get("/__docs__/tree");
+        assert!(tree.contains(r#"{"name":"a\\b.md","path":"a\\b.md","dir":false}"#), "{tree}");
+        let (headers, body) = srv.get("/__docs__/md?path=a%5Cb.md");
+        assert!(headers.starts_with("HTTP/1.1 200"), "{headers}");
+        assert!(body.contains("<h1>Backslash</h1>"));
     }
 
     #[test]
