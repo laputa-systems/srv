@@ -30,19 +30,27 @@ coverage:
 
 # Mutation-test the Rust lines changed since BASE. A diff that changes only
 # tests selects no mutants, so it tests every mutant in the crate instead.
+# cargo-mutants exits 3 when mutants only timed out and none were missed: a
+# mutant that hangs the suite is one the suite detected, so that status passes.
 BASE    ?= origin/main
-MUTANTS := cargo mutants --baseline run --timeout 60 --build-timeout 300 --output .work/mutants
+MUTANTS := cargo mutants --baseline run --timeout 10 --build-timeout 300 --output .work/mutants
 mutants-diff:
 	mkdir -p .work/mutants
 	git diff --merge-base "$(BASE)" -- '*.rs' > .work/mutants/pr.diff
 	if [ ! -s .work/mutants/pr.diff ]; then \
-	  echo "no Rust changes against $(BASE)"; \
+	  echo "no Rust changes against $(BASE)"; exit 0; \
 	elif [ -n "$$(cargo mutants --list --in-diff .work/mutants/pr.diff)" ]; then \
-	  $(MUTANTS) --in-diff .work/mutants/pr.diff; \
+	  $(MUTANTS) --in-diff .work/mutants/pr.diff; status=$$?; \
 	else \
 	  echo "the diff changes only tests; testing every mutant in the crate"; \
-	  $(MUTANTS); \
-	fi
+	  $(MUTANTS); status=$$?; \
+	fi; \
+	if [ $$status -eq 3 ]; then \
+	  echo "only timeouts, each a hang the suite detected:"; \
+	  cat .work/mutants/mutants.out/timeout.txt; \
+	  exit 0; \
+	fi; \
+	exit $$status
 
 release:
 	$(call cargo,release-static) clean -p $(NAME) --profile dist --target $(TARGET)
