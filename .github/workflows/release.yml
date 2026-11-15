@@ -84,7 +84,6 @@ jobs:
           tags: srv-builder:${{ matrix.target }}
           cache-from: type=gha,scope=srv-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=srv-${{ matrix.target }}
-      # rust-toolchain.toml selects the pinned nightly; rustup installs it, with rust-src, on the first cargo call.
       - name: Build macOS release
         if: matrix.docker_platform == ''
         run: make release TARGET="${{ matrix.target }}"
@@ -208,15 +207,15 @@ jobs:
               exit 1
             fi
           done
-          mkdir dist/zips
+          mkdir dist/archives
           for file in \
             dist/srv-aarch64-apple-darwin/srv-aarch64-apple-darwin \
             dist/srv-aarch64-unknown-linux-musl/srv-aarch64-unknown-linux-musl-static \
             dist/srv-x86_64-unknown-linux-musl/srv-x86_64-unknown-linux-musl-static; do
-            zip -9 --junk-paths "dist/zips/$(basename "$file").zip" "$file"
+            tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner -cJf "dist/archives/$(basename "$file").tar.xz" -C "$(dirname "$file")" "$(basename "$file")"
           done
-          cd dist/zips
-          sha256sum *.zip | LC_ALL=C sort -k2 > SHA256SUMS
+          cd dist/archives
+          sha256sum *.tar.xz | LC_ALL=C sort -k2 > SHA256SUMS
           sha256sum -c SHA256SUMS
       - name: Create release tag at triggering SHA
         env:
@@ -274,4 +273,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: release-${{ github.sha }}
-        run: gh release create "$RELEASE_TAG" dist/zips/*.zip dist/zips/SHA256SUMS --repo "$GITHUB_REPOSITORY" --prerelease --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag --title "$RELEASE_TAG"
+        run: gh release create "$RELEASE_TAG" dist/archives/*.tar.xz dist/archives/SHA256SUMS --repo "$GITHUB_REPOSITORY" --prerelease --notes-file "$RUNNER_TEMP/release-notes.md" --verify-tag --title "$RELEASE_TAG"
