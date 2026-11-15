@@ -84,6 +84,7 @@ jobs:
           tags: srv-builder:${{ matrix.target }}
           cache-from: type=gha,scope=srv-${{ matrix.target }}
           cache-to: type=gha,mode=max,scope=srv-${{ matrix.target }}
+      # rust-toolchain.toml selects the pinned nightly; rustup installs it, with rust-src, on the first cargo call.
       - name: Build macOS release
         if: matrix.docker_platform == ''
         run: make release TARGET="${{ matrix.target }}"
