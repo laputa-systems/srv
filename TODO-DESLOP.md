@@ -25,12 +25,14 @@ Per step:
 - **Tests:** CLI and HTTP boundary tests; the mutation run found a fourth defect (no response for a path beneath a file) and two weak oracles (`--version`, `--docs`). A free-port race in the new tests became `-p 0` support in the banner.
 - **Dead code:** no unused dependencies. Cuts: a one-use helper, a redundant guard, and a Windows-separator rewrite that broke backslash file names.
 - **Findings:** each fix had a test that failed first. The CI mutation lane caught one undertested fix (#29, followed by #30).
+- **Report review:** an independent reviewer (bridge worker) read the cumulative diff and found that the idle-connection fix had left connection threads unbounded, with spawn able to panic and writes untimed. Fixed in #36 with a 64-connection cap, 503 beyond it, and a write timeout.
 
 Method feedback:
 
 - **The mutation lane:** a test-only diff mutates the whole crate, and index-loop mutants then time out; exit 3 must count as detected. Keep the timeout near ten times the suite's run time.
 - **Merging:** merge only after every check has reported, the non-required lane included.
 - **Backlog edits:** closing tickets in parallel PRs conflicts in this file; work findings serially.
+- **Independent review:** keep it. It found a regression that the fix's own tests and the mutation lane could not, because no test bounded resource use.
 
 Shared-file gaps: F3 should generate the `coverage` and `mutants-diff` targets and the lane, because every Rust repository needs the same Makefile block.
 
