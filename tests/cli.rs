@@ -167,3 +167,29 @@ fn an_idle_connection_does_not_stall_other_requests() {
     assert!(response.ends_with("\r\n\r\nalpha"), "no response while another connection idles: {response:?}");
     running.stop();
 }
+
+#[test]
+fn connections_beyond_the_cap_get_503_until_others_close() {
+    const CAP: usize = 64;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha").unwrap();
+    let running = Running::start(&["-q", dir.path().to_str().unwrap()]);
+    let get = || {
+        let mut stream = TcpStream::connect(("127.0.0.1", running.port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        write!(stream, "GET /a.txt HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        let mut response = String::new();
+        let _ = stream.read_to_string(&mut response);
+        response
+    };
+
+    let idle: Vec<TcpStream> = (0..CAP).map(|_| TcpStream::connect(("127.0.0.1", running.port)).unwrap()).collect();
+    assert!(get().starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+    drop(idle);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !get().ends_with("\r\n\r\nalpha") {
+        assert!(Instant::now() < deadline, "the cap was not released after the idle connections closed");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    running.stop();
+}

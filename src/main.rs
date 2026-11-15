@@ -780,8 +780,21 @@ fn render_listing(dir: &Path, html: &mut String) -> io::Result<()> {
 /// oversized request.
 const MAX_HEADERS: usize = 100;
 
-/// How long a connection may take to send its request before srv drops it.
+/// How long a connection may take to send its request, or leave a response
+/// unread, before srv drops it.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Connections served at once; one more is answered 503 and closed.
+const MAX_CONNECTIONS: usize = 64;
+
+/// Counts a connection against MAX_CONNECTIONS until it is dropped.
+struct ConnectionSlot(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
 
 #[derive(Clone)]
 struct Server {
@@ -798,6 +811,7 @@ impl Server {
         let mut buf = [0u8; 8192];
         let mut pos = 0usize;
         stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+        stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
 
         loop {
             if pos == buf.len() {
@@ -1049,15 +1063,26 @@ fn main() {
         html: String::new(),
     };
 
+    let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming() {
         match stream {
             Ok(s) => {
+                if active.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= MAX_CONNECTIONS {
+                    active.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    let _ = write_error(&s, 503, "Service Unavailable");
+                    continue;
+                }
+                let slot = ConnectionSlot(active.clone());
                 let mut connection = srv.clone();
-                std::thread::spawn(move || {
+                let spawned = std::thread::Builder::new().spawn(move || {
+                    let _slot = slot;
                     if let Err(e) = connection.handle(s) {
                         eprintln!("error: {e}");
                     }
                 });
+                if let Err(e) = spawned {
+                    eprintln!("error: cannot start a connection thread: {e}");
+                }
             }
             Err(e) => eprintln!("accept error: {e}"),
         }
