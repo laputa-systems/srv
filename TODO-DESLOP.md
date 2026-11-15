@@ -9,15 +9,6 @@ Not started.
 
 ## Tickets
 
-### DSLP-5 · P2 · Dead code: tools and debloat
-
-- **Area:** deslop · dead code
-- **Where:** whole repository
-- **Problem:** No dead-code scan has run.
-- **Recommendation:** Run the deslop Dead code step. Accept: tools clean or allowlisted with reasons.
-- **Fix with:** deslop
-- **Effort:** S
-
 ### DSLP-6 · P2 · One idle connection stalls every other request
 
 - **Area:** Serving
