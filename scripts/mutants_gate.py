@@ -102,6 +102,18 @@ def verdict(results):
         raise GateError('unresolved timeout: ' + ', '.join(n for n, v in results.items() if v == 'timeout'))
 
 
+def parse_listing(text):
+    if not text.strip():
+        return []
+    try:
+        names = [entry['name'] for entry in json.loads(text)]
+    except (ValueError, KeyError, TypeError) as error:
+        raise GateError(f'selection error: {error}') from error
+    if len(set(names)) != len(names):
+        raise GateError('selection error: duplicate mutant names')
+    return names
+
+
 def selected_or_fail(relevant, names):
     if relevant and not names:
         raise GateError('unexpected empty selection')
@@ -139,14 +151,7 @@ def main():
         return stdout if capture else ''
 
     def listing(args):
-        try:
-            entries = json.loads(run(common + ['--list', '--json'] + args))
-            names = [entry['name'] for entry in entries]
-            if len(set(names)) != len(names):
-                raise ValueError('duplicate names')
-            return names
-        except (ValueError, KeyError, TypeError) as error:
-            raise GateError(f'selection error: {error}') from error
+        return parse_listing(run(common + ['--list', '--json'] + args))
 
     try:
         base_sha = run(['git', 'merge-base', base, 'HEAD']).strip()

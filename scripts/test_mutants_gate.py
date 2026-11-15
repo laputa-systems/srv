@@ -3,7 +3,9 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from mutants_gate import GateError, classify, parse_changes, read_results, selected_or_fail, scope_for, verdict
+from mutants_gate import (
+    GateError, classify, parse_changes, parse_listing, read_results, selected_or_fail, scope_for, verdict,
+)
 
 CONFIG = {'irrelevant': ['*.md', 'LICENSE'], 'scope': ['src/main.rs']}
 
@@ -30,6 +32,14 @@ class SelectionTests(unittest.TestCase):
     def test_rename(self):
         self.assertEqual(parse_changes('R100\0src/old.rs\0src/new.rs\0'),
                          {'src/old.rs': 'D', 'src/new.rs': 'A'})
+
+    def test_listing(self):
+        self.assertEqual(parse_listing(''), [])
+        self.assertEqual(parse_listing('[]'), [])
+        self.assertEqual(parse_listing('[{"name": "a"}, {"name": "b"}]'), ['a', 'b'])
+        for text in ('{', '[{"file": "a"}]', '[{"name": "a"}, {"name": "a"}]'):
+            with self.subTest(text=text), self.assertRaisesRegex(GateError, 'selection error'):
+                parse_listing(text)
 
     def test_empty_relevant_selection(self):
         with self.assertRaisesRegex(GateError, 'empty selection'):
