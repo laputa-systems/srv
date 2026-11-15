@@ -780,6 +780,10 @@ fn render_listing(dir: &Path, html: &mut String) -> io::Result<()> {
     Ok(())
 }
 
+/// Browsers send about 20 headers; more than this answers 431 like an
+/// oversized request.
+const MAX_HEADERS: usize = 100;
+
 struct Server {
     dir: PathBuf,
     quiet: bool,
@@ -803,7 +807,7 @@ impl Server {
                 return Ok(());
             }
             pos += n;
-            let mut hdrs = [httparse::EMPTY_HEADER; 16];
+            let mut hdrs = [httparse::EMPTY_HEADER; MAX_HEADERS];
             let mut req = httparse::Request::new(&mut hdrs);
             match req.parse(&buf[..pos]) {
                 Ok(httparse::Status::Complete(_)) => {
@@ -814,6 +818,9 @@ impl Server {
                     );
                 }
                 Ok(httparse::Status::Partial) => continue,
+                Err(httparse::Error::TooManyHeaders) => {
+                    return write_error(&stream, 431, "Request Header Fields Too Large");
+                }
                 Err(_) => return write_error(&stream, 400, "Bad Request"),
             }
         }
@@ -1589,6 +1596,26 @@ mod tests {
         assert_eq!(srv.status("/hello.txt/x"), 404);
         let docs = TestServer::new_docs();
         assert_eq!(docs.status("/__docs__/md?path=README.md/x.md"), 404);
+    }
+
+    #[test]
+    fn integration_a_browser_sized_header_set_is_accepted() {
+        let srv = TestServer::new();
+        let mut request = String::from("GET /hello.txt HTTP/1.1\r\nHost: localhost\r\n");
+        for index in 0..40 {
+            request.push_str(&format!("X-Header-{index}: value\r\n"));
+        }
+        request.push_str("\r\n");
+        let response = raw_request(&srv, request.as_bytes());
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(response.ends_with("\r\n\r\nhello world"), "{response}");
+
+        let mut flood = String::from("GET /hello.txt HTTP/1.1\r\n");
+        for index in 0..=MAX_HEADERS {
+            flood.push_str(&format!("X-{index}: v\r\n"));
+        }
+        flood.push_str("\r\n");
+        assert!(raw_request(&srv, flood.as_bytes()).starts_with("HTTP/1.1 431 Request Header Fields Too Large\r\n"));
     }
 
     #[test]
