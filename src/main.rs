@@ -983,41 +983,124 @@ If this tool blocks the task, you may fix, test, open and merge a PR under Joshu
 standing instructions. Release only when needed to deliver the verified fix.\n\
 Procedure: https://github.com/joshuarli/usr/blob/main/dotfiles/base/.agents/instructions/owned-tools.md";
 
-fn main() {
-    let mut quiet = false;
-    let mut docs_mode = false;
-    let mut port = String::from("8000");
-    let mut bind = String::from("127.0.0.1");
-    let mut dir = String::from(".");
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OptionAction {
+    Quiet,
+    Docs,
+    Port,
+    Bind,
+    Version,
+    Help,
+}
 
-    let mut args = env::args().skip(1);
+const DEFAULT_PORT: &str = "8000";
+const DEFAULT_BIND: &str = "127.0.0.1";
+const DEFAULT_PATH: &str = ".";
+
+struct CliOption {
+    names: &'static [&'static str],
+    value: Option<&'static str>,
+    description: &'static str,
+    default: Option<&'static str>,
+    action: OptionAction,
+}
+
+const CLI_OPTIONS: &[CliOption] = &[
+    CliOption { names: &["-q"], value: None, description: "disable request logs", default: None, action: OptionAction::Quiet },
+    CliOption { names: &["--docs"], value: None, description: "launch docs browser for Markdown files", default: None, action: OptionAction::Docs },
+    CliOption { names: &["-p"], value: Some("port"), description: "port to listen on", default: Some(DEFAULT_PORT), action: OptionAction::Port },
+    CliOption { names: &["-b"], value: Some("address"), description: "bind address", default: Some(DEFAULT_BIND), action: OptionAction::Bind },
+    CliOption { names: &["-V", "--version"], value: None, description: "print version and exit", default: None, action: OptionAction::Version },
+    CliOption { names: &["-h", "--help"], value: None, description: "print this help and exit", default: None, action: OptionAction::Help },
+];
+
+const CLI_EXAMPLES: &[&str] = &["srv ./public", "srv -p 8080 -b 127.0.0.1 ./public", "srv --docs ./docs"];
+
+fn help() -> String {
+    let mut text = String::from("usage: srv");
+    for option in CLI_OPTIONS.iter().filter(|option| !matches!(option.action, OptionAction::Help | OptionAction::Version)) {
+        text.push_str(&format!(" [{}", option.names[0]));
+        if let Some(value) = option.value {
+            text.push_str(&format!(" {value}"));
+        }
+        text.push(']');
+    }
+    text.push_str(&format!(" [path]\n\nServe a file or directory over HTTP.\n\nArguments:\n  path  file or directory to serve (default: {DEFAULT_PATH})\n\nOptions:\n"));
+    for option in CLI_OPTIONS {
+        let mut names = option.names.join(", ");
+        if let Some(value) = option.value {
+            names.push(' ');
+            names.push_str(value);
+        }
+        text.push_str(&format!("  {names:<15} {}", option.description));
+        if let Some(default) = option.default {
+            text.push_str(&format!(" (default: {default})"));
+        }
+        text.push('\n');
+    }
+    text.push_str("\nExamples:\n");
+    for example in CLI_EXAMPLES {
+        text.push_str(&format!("  {example}\n"));
+    }
+    text.push_str(&format!("\n{OWNED_TOOL_FOOTER}\n"));
+    text
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct CliArgs {
+    quiet: bool,
+    docs_mode: bool,
+    port: String,
+    bind: String,
+    dir: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CliResult {
+    Serve(CliArgs),
+    Help,
+    Version,
+}
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> Result<CliResult, String> {
+    let mut parsed = CliArgs {
+        quiet: false,
+        docs_mode: false,
+        port: String::from(DEFAULT_PORT),
+        bind: String::from(DEFAULT_BIND),
+        dir: String::from(DEFAULT_PATH),
+    };
+    let mut args = args.into_iter();
     while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-q" => quiet = true,
-            "--docs" => docs_mode = true,
-            "-p" => port = args.next().unwrap_or_else(|| die("-p requires a value")),
-            "-b" => bind = args.next().unwrap_or_else(|| die("-b requires a value")),
-            "-V" | "--version" => {
-                println!("srv {}", env!("CARGO_PKG_VERSION"));
-                std::process::exit(0);
-            }
-            "-h" | "--help" => {
-                eprintln!(
-                    "usage: srv [-q] [--docs] [-p port] [-b address] [path]\n\
-                     \n\
-                     path         file or directory to serve (default: .)\n\
-                     -q           quiet; disable request logs\n\
-                     --docs       launch docs browser for markdown files\n\
-                     -p port      port to listen on (default: 8000)\n\
-                     -b address   bind address (default: 127.0.0.1)\n\
-                     -V, --version print version and exit\n\
-                     -h, --help   print this help and exit\n\n{OWNED_TOOL_FOOTER}"
-                );
-                std::process::exit(0);
-            }
-            _ => dir = arg,
+        let Some(option) = CLI_OPTIONS.iter().find(|option| option.names.contains(&arg.as_str())) else {
+            parsed.dir = arg;
+            continue;
+        };
+        match option.action {
+            OptionAction::Quiet => parsed.quiet = true,
+            OptionAction::Docs => parsed.docs_mode = true,
+            OptionAction::Port => parsed.port = args.next().ok_or_else(|| format!("{arg} requires a value"))?,
+            OptionAction::Bind => parsed.bind = args.next().ok_or_else(|| format!("{arg} requires a value"))?,
+            OptionAction::Version => return Ok(CliResult::Version),
+            OptionAction::Help => return Ok(CliResult::Help),
         }
     }
+    Ok(CliResult::Serve(parsed))
+}
+
+fn main() {
+    let CliArgs { quiet, docs_mode, port, bind, dir } = match parse_args(env::args().skip(1)) {
+        Ok(CliResult::Serve(args)) => args,
+        Ok(CliResult::Help) => {
+            print!("{}", help());
+            return;
+        }
+        Ok(CliResult::Version) => {
+            println!("srv {}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Err(error) => die(&error),
+    };
 
     let canonical = match fs::canonicalize(&dir) {
         Ok(p) => p,
@@ -1091,6 +1174,41 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn help_examples_parse_with_the_real_parser() {
+        let expected = [
+            (false, "8000", "127.0.0.1", "./public"),
+            (false, "8080", "127.0.0.1", "./public"),
+            (true, "8000", "127.0.0.1", "./docs"),
+        ];
+        assert_eq!(super::CLI_EXAMPLES.len(), expected.len());
+        for (example, (docs_mode, port, bind, dir)) in super::CLI_EXAMPLES.iter().zip(expected) {
+            let mut words = example.split_whitespace();
+            assert_eq!(words.next(), Some("srv"));
+            let parsed = super::parse_args(words.map(str::to_owned)).unwrap();
+            assert_eq!(parsed, super::CliResult::Serve(super::CliArgs {
+                quiet: false, docs_mode, port: port.into(), bind: bind.into(), dir: dir.into(),
+            }));
+        }
+    }
+
+    #[test]
+    fn bare_invocation_keeps_serving_defaults() {
+        assert_eq!(super::parse_args(Vec::new()).unwrap(), super::CliResult::Serve(super::CliArgs {
+            quiet: false, docs_mode: false, port: "8000".into(), bind: "127.0.0.1".into(), dir: ".".into(),
+        }));
+    }
+
+    #[test]
+    fn cli_option_names_are_unique() {
+        let mut names = std::collections::HashSet::new();
+        for option in super::CLI_OPTIONS {
+            for name in option.names {
+                assert!(names.insert(name), "duplicate option {name}");
+            }
+        }
+    }
+
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpStream;
