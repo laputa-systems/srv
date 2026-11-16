@@ -34,7 +34,7 @@ With no path, `srv` serves the current directory at `http://127.0.0.1:8000`.
 | `-b` | Pass a bind address; defaults to `127.0.0.1`. |
 | `--docs` | Browse Markdown files under the selected root (a selected file uses its parent directory); hidden directories and directories matched by simple `.gitignore` patterns are skipped. |
 | `-q` | Suppress per-request logs. |
-| `-h`, `--help` | Print usage. |
+| `-h`, `--help` | Print the complete reference and examples to standard output. |
 | `-V`, `--version` | Print the version. |
 
 For a directory, `index.html` is served when present; otherwise `srv` shows a listing. `.md` and `.markdown` files render as HTML. Only GET requests are served. `srv` writes startup, request, and error messages to standard error; `-q` suppresses request messages.
