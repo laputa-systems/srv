@@ -1885,7 +1885,8 @@ mod tests {
             "```mermaid\nflowchart TD\n  start[\"Parent agent\"] --> tier{\"Which tier?\"}\n  tier -->|expert| harness{\"Harness?\"}\n  harness -->|OpenCode| oc[\"OpenCode native expert agent<br/>effort max\"]\n  other --> start\n```\n",
         );
         assert!(html.contains("<svg"), "{html}");
-        assert!(html.contains("viewBox="), "{html}");
+        let view_box = html.split("viewBox=\"").nth(1).unwrap().split('"').next().unwrap();
+        assert_eq!(view_box.split_ascii_whitespace().nth(3), Some("798"));
         assert!(html.contains("Parent agent"), "{html}");
         assert!(!html.contains("language-mermaid"), "{html}");
     }
