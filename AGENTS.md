@@ -11,7 +11,7 @@
 - The GitHub `release` workflow is `workflow_dispatch` on the default branch. It builds macOS ARM64 and Linux x86_64 and AArch64, runs the Linux checks, and publishes prerelease `release-<sha>` with the macOS arm64 zip and the two static Linux zips.
 - Only GET is served. The connection closes after one response.
 - Each connection gets its own thread, up to 64 at once; another is answered 503 and closed. A connection has 30 seconds to send its request, and a response write that blocks for 30 seconds drops it.
-- A directory serves `index.html` when that lookup is a file, and a listing otherwise. `.md` and `.markdown` render as HTML. A file argument is served for every URL. Mermaid `flowchart` blocks in standalone Markdown pages render as inline SVG via `merman`; other diagram types and parse failures fall back to a plain code block, and `--docs` fragments always show the code block.
+- A directory serves `index.html` when that lookup is a file, and a listing otherwise. `.md` and `.markdown` render as HTML. A file argument is served for every URL, unless the file is a onefile archive (an HTML document with a ZIP archive appended), in which case the page is served at `/` and archive entries at their paths. Mermaid `flowchart` blocks in standalone Markdown pages render as inline SVG via `merman`; other diagram types and parse failures fall back to a plain code block, and `--docs` fragments always show the code block.
 - `normalize_into` rejects a URL whose `..` segments climb above the canonical root.
 - A URL through a symlinked directory can still name a file outside that root. `walk_docs_dir` skips symlink entries, so the `--docs` tree does not list them.
 
@@ -28,7 +28,7 @@ Boundaries and their guards:
 - HTTP GET of files, directory listings (natural sort, encoding, escaping), `index.html`, Markdown rendering, 404, and 405: the `integration_*` tests in `src/main.rs`. Mermaid rendering and code-block fallback: `integration_markdown_mermaid_*`, `markdown_mermaid_*`, `integration_docs_mode_mermaid_*`.
 - Path containment (`..`, encoded traversal) and symlink rules: `integration_path_traversal`, `integration_encoded_traversal`, `integration_*_symlink_*`.
 - `--docs` shell, tree JSON, and Markdown fragments: `integration_docs_mode_*`.
-- Single-file mode: `integration_single_file_any_path`.
+- Single-file mode: `integration_single_file_any_path`. Onefile archives: `onefile_detect_*`, `integration_onefile_serves_the_page_and_archive_entries`.
 - A truncated send keeps the server alive: `send_file_truncated_returns_and_server_stays_live`.
 - `-h`, `--help`, `--version`: `tests/help.rs` and `tests/cli.rs`.
 - `-p`, `-b`, `-q`, `--docs`, a file argument, usage errors and an occupied port (exit 1), the idle-connection and connection-cap behavior: `tests/cli.rs`.

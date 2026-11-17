@@ -1,10 +1,11 @@
 use std::{
     borrow::Cow,
     cmp::Ordering,
+    collections::HashMap,
     env,
     fmt::Write as _,
     fs::{self, File},
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
 };
@@ -351,6 +352,8 @@ fn mime(path: &Path) -> &'static str {
         "mp3" => "audio/mpeg",
         "ogg" => "audio/ogg",
         "wav" => "audio/wave",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
         "pdf" => "application/pdf",
         "wasm" => "application/wasm",
         "zip" => "application/zip",
@@ -725,6 +728,296 @@ fn send_file(file: &File, mut sock: &TcpStream, len: u64) -> io::Result<()> {
     Ok(())
 }
 
+const EOCD_LEN: usize = 22;
+const EOCD_TAIL: u64 = EOCD_LEN as u64 + 65_535;
+const EOCD_SCAN_LIMIT: usize = 16;
+const EOCD_SIG: u32 = 0x0605_4B50;
+const CENTRAL_SIG: u32 = 0x0201_4B50;
+const LOCAL_SIG: u32 = 0x0403_4B50;
+const METHOD_STORED: u16 = 0;
+const ZIP64_16: u16 = 0xFFFF;
+const ZIP64_32: u32 = 0xFFFF_FFFF;
+
+/// An `extension-onefile` polyglot: an HTML document with a stored ZIP
+/// archive appended, so one file serves as both. Entries are read from
+/// disk per request, mirroring single-file mode.
+struct OnefileArchive {
+    path: PathBuf,
+    file_len: u64,
+    entries: Vec<OnefileEntry>,
+    by_name: HashMap<String, usize>,
+    skipped: Vec<String>,
+}
+
+struct OnefileEntry {
+    name: String,
+    data_offset: u64,
+    len: u64,
+    mime: Option<String>,
+}
+
+fn file_read_exact_at(file: &mut File, offset: u64, buf: &mut [u8]) -> io::Result<()> {
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(buf)
+}
+
+fn u16_at(buf: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([buf[at], buf[at + 1]])
+}
+
+fn u32_at(buf: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(buf[at..at + 4].try_into().expect("u32 field"))
+}
+
+/// Detects a onefile polyglot. `Ok(None)` means the file is not one: a
+/// plain HTML or plain ZIP file keeps the usual single-file behavior.
+/// `Err` means an archive is present but unreadable.
+fn onefile_detect(path: &Path, len: u64) -> Result<Option<OnefileArchive>, String> {
+    if len < EOCD_LEN as u64 + 1 {
+        return Ok(None);
+    }
+    let mut file = File::open(path).map_err(|e| format!("cannot open: {e}"))?;
+    let tail_len = EOCD_TAIL.min(len);
+    let tail_base = len - tail_len;
+    let mut tail = vec![0u8; tail_len as usize];
+    file_read_exact_at(&mut file, tail_base, &mut tail)
+        .map_err(|e| format!("cannot read the file tail: {e}"))?;
+
+    let mut candidates = Vec::new();
+    if tail.len() >= EOCD_LEN {
+        let mut i = tail.len() - EOCD_LEN;
+        loop {
+            if u32_at(&tail, i) == EOCD_SIG {
+                candidates.push(tail_base + i as u64);
+                if candidates.len() == EOCD_SCAN_LIMIT {
+                    break;
+                }
+            }
+            if i == 0 {
+                break;
+            }
+            i -= 1;
+        }
+    }
+
+    let mut first_err: Option<String> = None;
+    for eocd_abs in candidates.into_iter().rev() {
+        match parse_onefile_candidate(&mut file, path, len, eocd_abs) {
+            Ok(Some(archive)) => return Ok(Some(archive)),
+            Ok(None) => {}
+            Err(reason) => {
+                if first_err.is_none() {
+                    first_err = Some(reason);
+                }
+            }
+        }
+    }
+    match first_err {
+        Some(reason) => Err(reason),
+        None => Ok(None),
+    }
+}
+
+fn parse_onefile_candidate(
+    file: &mut File,
+    path: &Path,
+    len: u64,
+    eocd_abs: u64,
+) -> Result<Option<OnefileArchive>, String> {
+    let mut eocd = [0u8; EOCD_LEN];
+    file_read_exact_at(file, eocd_abs, &mut eocd).map_err(|e| format!("cannot read: {e}"))?;
+    let disk = u16_at(&eocd, 4);
+    let cd_disk = u16_at(&eocd, 6);
+    let n_disk = u16_at(&eocd, 8);
+    let n_total = u16_at(&eocd, 10);
+    let cd_size = u64::from(u32_at(&eocd, 12));
+    let cd_offset = u64::from(u32_at(&eocd, 16));
+    if disk != 0 || cd_disk != 0 || n_disk != n_total {
+        return Err("the embedded ZIP spans multiple disks".to_owned());
+    }
+    if n_total == 0 {
+        return Ok(None);
+    }
+    if n_total == ZIP64_16
+        || cd_size == u64::from(ZIP64_32)
+        || cd_offset == u64::from(ZIP64_32)
+    {
+        return Err("the embedded ZIP uses ZIP64 fields".to_owned());
+    }
+    let cd_abs = eocd_abs
+        .checked_sub(cd_size)
+        .ok_or_else(|| "the embedded ZIP central directory is out of bounds".to_owned())?;
+    if cd_size > 16 * 1024 * 1024 {
+        return Err("the embedded ZIP central directory is unreasonably large".to_owned());
+    }
+
+    // The onefile format bakes file-absolute offsets into the archive; a
+    // conventional prefixed ZIP keeps offsets relative to the archive start.
+    let (file_absolute, rel_prefix) = if cd_abs == cd_offset {
+        (true, 0)
+    } else if cd_abs > cd_offset {
+        (false, cd_abs - cd_offset)
+    } else {
+        return Err("the embedded ZIP central directory offset is out of bounds".to_owned());
+    };
+
+    let mut cd = vec![0u8; cd_size as usize];
+    file_read_exact_at(file, cd_abs, &mut cd)
+        .map_err(|e| format!("cannot read the central directory: {e}"))?;
+
+    struct RawEntry {
+        name: String,
+        compressed: u64,
+        uncompressed: u64,
+        local_offset: u64,
+    }
+
+    let mut raw: Vec<RawEntry> = Vec::with_capacity(n_total as usize);
+    let mut skipped: Vec<String> = Vec::new();
+    let mut min_local = u64::MAX;
+    let mut off = 0usize;
+    for i in 0..n_total {
+        if off + 46 > cd.len() {
+            return Err(format!("central entry {i} is out of bounds"));
+        }
+        if u32_at(&cd, off) != CENTRAL_SIG {
+            return Err(format!("central entry {i} has a bad signature"));
+        }
+        let flags = u16_at(&cd, off + 8);
+        let method = u16_at(&cd, off + 10);
+        let compressed = u32_at(&cd, off + 20);
+        let uncompressed = u32_at(&cd, off + 24);
+        let name_len = u64::from(u16_at(&cd, off + 28));
+        let extra_len = usize::from(u16_at(&cd, off + 30));
+        let comment_len = usize::from(u16_at(&cd, off + 32));
+        let local_offset = u64::from(u32_at(&cd, off + 42));
+        let name_start = off + 46;
+        let name_end = name_start
+            .checked_add(name_len as usize)
+            .filter(|end| *end <= cd.len())
+            .ok_or_else(|| format!("central entry {i} is out of bounds"))?;
+        off = name_end
+            .checked_add(extra_len)
+            .and_then(|end| end.checked_add(comment_len))
+            .filter(|end| *end <= cd.len())
+            .ok_or_else(|| format!("central entry {i} is out of bounds"))?;
+        let name = String::from_utf8_lossy(&cd[name_start..name_end]).into_owned();
+        min_local = min_local.min(local_offset);
+        if compressed == ZIP64_32 || uncompressed == ZIP64_32 {
+            skipped.push(name);
+            continue;
+        }
+        if flags & 0x1 != 0 || method != METHOD_STORED {
+            skipped.push(name);
+            continue;
+        }
+        raw.push(RawEntry {
+            name,
+            compressed: u64::from(compressed),
+            uncompressed: u64::from(uncompressed),
+            local_offset,
+        });
+    }
+
+    let prefix_len = if file_absolute {
+        if min_local == u64::MAX {
+            return Err("the embedded ZIP has no entries".to_owned());
+        }
+        min_local
+    } else {
+        rel_prefix
+    };
+    if prefix_len == 0 {
+        return Ok(None);
+    }
+    if prefix_len > cd_abs {
+        return Err("the embedded ZIP entries start beyond the central directory".to_owned());
+    }
+    if !prefix_looks_like_html(file, prefix_len)? {
+        return Ok(None);
+    }
+    let resolve = |local: u64| {
+        if file_absolute { local } else { prefix_len + local }
+    };
+
+    let mut entries: Vec<OnefileEntry> = Vec::with_capacity(raw.len());
+    let mut by_name: HashMap<String, usize> = HashMap::with_capacity(raw.len());
+    for entry in raw {
+        let abs = resolve(entry.local_offset);
+        let mut local = [0u8; 30];
+        file_read_exact_at(file, abs, &mut local)
+            .map_err(|e| format!("cannot read entry {}: {e}", entry.name))?;
+        if u32_at(&local, 0) != LOCAL_SIG {
+            return Err(format!("entry {} has a bad local header", entry.name));
+        }
+        let name_len = u64::from(u16_at(&local, 26));
+        let extra_len = u64::from(u16_at(&local, 28));
+        let data_offset = abs + 30 + name_len + extra_len;
+        if entry.compressed != entry.uncompressed {
+            return Err(format!(
+                "entry {} is stored but its sizes differ",
+                entry.name
+            ));
+        }
+        if data_offset + entry.compressed > cd_abs {
+            return Err(format!("entry {} overruns the archive", entry.name));
+        }
+        if by_name.insert(entry.name.clone(), entries.len()).is_some() {
+            return Err(format!("entry {} appears twice", entry.name));
+        }
+        entries.push(OnefileEntry {
+            name: entry.name,
+            data_offset,
+            len: entry.uncompressed,
+            mime: None,
+        });
+    }
+
+    if let Some(idx) = entries.iter().position(|e| e.name == "metadata.json")
+        && entries[idx].len <= 8 * 1024 * 1024
+    {
+        let mut bytes = vec![0u8; entries[idx].len as usize];
+        if file_read_exact_at(file, entries[idx].data_offset, &mut bytes).is_ok()
+            && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            && let Some(list) = value.get("entries").and_then(serde_json::Value::as_array)
+        {
+            for item in list {
+                let (Some(name), Some(mime)) = (
+                    item.get("name").and_then(serde_json::Value::as_str),
+                    item.get("mime").and_then(serde_json::Value::as_str),
+                ) else {
+                    continue;
+                };
+                if let Some(entry) = entries.iter_mut().find(|entry| entry.name == name) {
+                    entry.mime = Some(mime.to_owned());
+                }
+            }
+        }
+    }
+
+    Ok(Some(OnefileArchive {
+        path: path.to_path_buf(),
+        file_len: len,
+        entries,
+        by_name,
+        skipped,
+    }))
+}
+
+fn prefix_looks_like_html(file: &mut File, prefix_len: u64) -> Result<bool, String> {
+    let mut head = [0u8; 512];
+    let n = head.len().min(prefix_len as usize);
+    file_read_exact_at(file, 0, &mut head[..n])
+        .map_err(|e| format!("cannot read the file start: {e}"))?;
+    let mut bytes = &head[..n];
+    if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        bytes = rest;
+    }
+    let first = bytes.iter().find(|b| !b.is_ascii_whitespace());
+    Ok(first == Some(&b'<'))
+}
+
+
 fn write_headers(
     mut sock: &TcpStream,
     status: u16,
@@ -874,6 +1167,7 @@ struct Server {
     quiet: bool,
     docs_mode: bool,
     single_file: Option<String>,
+    onefile: Option<std::sync::Arc<OnefileArchive>>,
     fp: PathBuf,
     html: String,
 }
@@ -926,6 +1220,10 @@ impl Server {
 
         if self.docs_mode {
             return self.dispatch_docs(sock, path_raw);
+        }
+
+        if let Some(archive) = self.onefile.clone() {
+            return self.dispatch_onefile(sock, path_raw, &archive);
         }
 
         let owned;
@@ -989,6 +1287,46 @@ impl Server {
         }
 
         Ok(())
+    }
+
+    fn dispatch_onefile(
+        &mut self,
+        sock: &TcpStream,
+        path_raw: &str,
+        archive: &OnefileArchive,
+    ) -> io::Result<()> {
+        let path = path_raw.split('?').next().unwrap_or("/");
+        let decoded = percent_decode(path);
+        let mut key = String::with_capacity(decoded.len());
+        for segment in decoded.split('/') {
+            match segment {
+                "" | "." => {}
+                ".." => return write_error(sock, 403, "Forbidden"),
+                s => {
+                    if !key.is_empty() {
+                        key.push('/');
+                    }
+                    key.push_str(s);
+                }
+            }
+        }
+        if key.is_empty() {
+            // The onefile loader fetches the page's own URL and parses the
+            // appended ZIP, so `/` must serve the file whole.
+            return serve_file(sock, &archive.path, archive.file_len, "text/html; charset=utf-8");
+        }
+        let Some(&index) = archive.by_name.get(key.as_str()) else {
+            return write_error(sock, 404, "Not Found");
+        };
+        let entry = &archive.entries[index];
+        let ct = entry
+            .mime
+            .as_deref()
+            .unwrap_or_else(|| mime(Path::new(&entry.name)));
+        let mut file = File::open(&archive.path)?;
+        file.seek(SeekFrom::Start(entry.data_offset))?;
+        write_headers(sock, 200, "OK", ct, entry.len)?;
+        send_file(&file, sock, entry.len)
     }
 
     fn dispatch_docs(&mut self, sock: &TcpStream, path_raw: &str) -> io::Result<()> {
@@ -1179,22 +1517,44 @@ fn main() {
         Err(e) => die(&format!("{dir}: {e}")),
     };
 
-    let (dir, single_file) = if canonical.is_file() {
+    let (dir, single_file, onefile, canonical_display) = if canonical.is_file() {
+        let display = canonical.display().to_string();
         let name = canonical
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_else(|| die("file has no valid name"))
             .to_owned();
+        let len = fs::metadata(&canonical)
+            .unwrap_or_else(|e| die(&format!("{}: {e}", canonical.display())))
+            .len();
+        let onefile = match onefile_detect(&canonical, len) {
+            Ok(found) => found,
+            Err(reason) => {
+                eprintln!("\twarning: {display}: {reason}; serving the file as-is");
+                None
+            }
+        };
         let parent = canonical.parent().unwrap_or(&canonical).to_path_buf();
-        (parent, Some(format!("/{name}")))
+        (parent, Some(format!("/{name}")), onefile, display)
     } else if canonical.is_dir() {
-        (canonical, None)
+        (canonical, None, None, String::new())
     } else {
         die(&format!(
             "{} is not a file or directory",
             canonical.display()
         ));
     };
+    let onefile = onefile.map(std::sync::Arc::new);
+    if let Some(archive) = &onefile
+        && !archive.skipped.is_empty()
+    {
+        eprintln!(
+            "\twarning: {canonical_display}: {} archive entr{} not served (unsupported compression or encryption): {}",
+            archive.skipped.len(),
+            if archive.skipped.len() == 1 { "y is" } else { "ies are" },
+            archive.skipped.join(", ")
+        );
+    }
 
     let requested = format!("{bind}:{port}");
     let listener = TcpListener::bind(&requested)
@@ -1204,7 +1564,16 @@ fn main() {
         .map_or(requested, |bound| bound.to_string());
 
     if let Some(ref name) = single_file {
-        eprintln!("\tServing {}{} over HTTP on {addr}", dir.display(), name);
+        if let Some(archive) = &onefile {
+            eprintln!(
+                "\tServing {}{} (onefile archive, {} entries) over HTTP on {addr}",
+                dir.display(),
+                name,
+                archive.entries.len()
+            );
+        } else {
+            eprintln!("\tServing {}{} over HTTP on {addr}", dir.display(), name);
+        }
     } else {
         eprintln!("\tServing {} over HTTP on {addr}", dir.display());
     }
@@ -1214,6 +1583,7 @@ fn main() {
         quiet,
         docs_mode,
         single_file,
+        onefile,
         fp: PathBuf::new(),
         html: String::new(),
     };
@@ -1593,6 +1963,7 @@ mod tests {
                 quiet: true,
                 docs_mode,
                 single_file: None,
+                onefile: None,
                 fp: PathBuf::new(),
                 html: String::new(),
             };
@@ -1694,6 +2065,7 @@ mod tests {
                     "/{}",
                     canonical.file_name().unwrap().to_str().unwrap()
                 )),
+                onefile: None,
                 fp: PathBuf::new(),
                 html: String::new(),
             };
@@ -1741,6 +2113,356 @@ mod tests {
                 let _ = t.join();
             }
         }
+    }
+
+    fn onefile_default_entries() -> Vec<(&'static str, Vec<u8>, &'static str)> {
+        vec![
+            ("resources/0.woff2", (0u8..64).collect(), "font/woff2"),
+            ("resources/9.bin", b"<html>frame</html>".to_vec(), "text/html"),
+        ]
+    }
+
+    fn onefile_prefix() -> Vec<u8> {
+        let index_json = onefile_default_entries()
+            .iter()
+            .map(|(name, _, mime)| format!("{{\"name\":\"{name}\",\"mime\":\"{mime}\"}}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "<!DOCTYPE html><html><head><script id=\"onefile-metadata\" type=\"application/json\">{{\"sourceUrl\":\"https://example.com/\",\"capturedAtMs\":1,\"unresolvedTotal\":0,\"unresolvedSample\":[],\"entries\":[{index_json}]}}</script></head><body>page</body></html><noframes>\n"
+        )
+        .into_bytes()
+    }
+
+    fn onefile_fixture_with_prefix(prefix: Vec<u8>, file_absolute: bool, method: u16) -> Vec<u8> {
+        let entries = onefile_default_entries();
+        let metadata_json = format!(
+            "{{\"generator\":\"extension-onefile\",\"sourceUrl\":\"https://example.com/\",\"capturedAtMs\":1,\"prefixLength\":{},\"entries\":[{}],\"unresolved\":[]}}",
+            prefix.len(),
+            entries
+                .iter()
+                .map(|(name, data, mime)| {
+                    format!(
+                        "{{\"name\":\"{name}\",\"mime\":\"{mime}\",\"size\":{},\"crc32\":0}}",
+                        data.len()
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let mut all: Vec<(&str, Vec<u8>, u16)> = entries
+            .into_iter()
+            .map(|(name, data, _)| (name, data, method))
+            .collect();
+        all.push(("metadata.json", metadata_json.into_bytes(), 0));
+        build_onefile_zip(prefix, &all, file_absolute)
+    }
+
+    fn onefile_fixture(file_absolute: bool) -> Vec<u8> {
+        onefile_fixture_with_prefix(onefile_prefix(), file_absolute, 0)
+    }
+
+    fn build_onefile_zip(
+        prefix: Vec<u8>,
+        entries: &[(&str, Vec<u8>, u16)],
+        file_absolute: bool,
+    ) -> Vec<u8> {
+        let prefix_len = prefix.len() as u64;
+        let mut bytes = prefix;
+        let mut central = Vec::new();
+        for (name, data, method) in entries {
+            let local_abs = bytes.len() as u64;
+            let name = name.as_bytes();
+            let mut lh = Vec::with_capacity(30 + name.len());
+            lh.extend_from_slice(&0x0403_4B50_u32.to_le_bytes());
+            lh.extend_from_slice(&20_u16.to_le_bytes());
+            lh.extend_from_slice(&0_u16.to_le_bytes());
+            lh.extend_from_slice(&method.to_le_bytes());
+            lh.extend_from_slice(&0_u16.to_le_bytes());
+            lh.extend_from_slice(&0_u16.to_le_bytes());
+            lh.extend_from_slice(&0_u32.to_le_bytes());
+            lh.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            lh.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            lh.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            lh.extend_from_slice(&0_u16.to_le_bytes());
+            lh.extend_from_slice(name);
+            bytes.extend_from_slice(&lh);
+            bytes.extend_from_slice(data);
+
+            let lho = if file_absolute {
+                local_abs
+            } else {
+                local_abs - prefix_len
+            };
+            let mut ch = Vec::with_capacity(46 + name.len());
+            ch.extend_from_slice(&0x0201_4B50_u32.to_le_bytes());
+            ch.extend_from_slice(&20_u16.to_le_bytes());
+            ch.extend_from_slice(&20_u16.to_le_bytes());
+            ch.extend_from_slice(&0_u16.to_le_bytes());
+            ch.extend_from_slice(&method.to_le_bytes());
+            ch.extend_from_slice(&0_u16.to_le_bytes());
+            ch.extend_from_slice(&0_u16.to_le_bytes());
+            ch.extend_from_slice(&0_u32.to_le_bytes());
+            ch.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            ch.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            ch.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            ch.extend_from_slice(&0_u16.to_le_bytes());
+            ch.extend_from_slice(&0_u16.to_le_bytes());
+            ch.extend_from_slice(&0_u16.to_le_bytes());
+            ch.extend_from_slice(&0_u16.to_le_bytes());
+            ch.extend_from_slice(&0_u32.to_le_bytes());
+            ch.extend_from_slice(&(lho as u32).to_le_bytes());
+            ch.extend_from_slice(name);
+            central.extend_from_slice(&ch);
+        }
+        let cd_abs = bytes.len() as u64;
+        let cd_offset = if file_absolute {
+            cd_abs
+        } else {
+            cd_abs - prefix_len
+        };
+        bytes.extend_from_slice(&central);
+        let mut eocd = Vec::with_capacity(22);
+        eocd.extend_from_slice(&0x0605_4B50_u32.to_le_bytes());
+        eocd.extend_from_slice(&0_u16.to_le_bytes());
+        eocd.extend_from_slice(&0_u16.to_le_bytes());
+        eocd.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        eocd.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        eocd.extend_from_slice(&(central.len() as u32).to_le_bytes());
+        eocd.extend_from_slice(&(cd_offset as u32).to_le_bytes());
+        eocd.extend_from_slice(&0_u16.to_le_bytes());
+        bytes.extend_from_slice(&eocd);
+        bytes.extend_from_slice(b"</noframes>");
+        bytes
+    }
+
+    fn write_temp_file(name: &str, bytes: &[u8]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        fs::write(&path, bytes).unwrap();
+        let canonical = fs::canonicalize(&path).unwrap();
+        (dir, canonical)
+    }
+
+    #[test]
+    fn onefile_detect_reads_file_absolute_offsets() {
+        let bytes = onefile_fixture(true);
+        let (_dir, path) = write_temp_file("page.u.zip.html", &bytes);
+        let len = fs::metadata(&path).unwrap().len();
+        let archive = onefile_detect(&path, len)
+            .unwrap()
+            .expect("fixture is a onefile archive");
+        assert_eq!(archive.entries.len(), 3);
+        let font = archive
+            .entries
+            .iter()
+            .find(|entry| entry.name == "resources/0.woff2")
+            .unwrap();
+        assert_eq!(
+            archive.entries[archive.by_name["resources/9.bin"]]
+                .mime
+                .as_deref(),
+            Some("text/html")
+        );
+        assert_eq!(
+            archive.entries[archive.by_name["metadata.json"]]
+                .mime
+                .as_deref(),
+            None
+        );
+        let mut file = File::open(&path).unwrap();
+        let mut buf = vec![0u8; font.len as usize];
+        file_read_exact_at(&mut file, font.data_offset, &mut buf).unwrap();
+        assert_eq!(buf, (0u8..64).collect::<Vec<u8>>());
+        assert_eq!(archive.file_len, len);
+    }
+
+    #[test]
+    fn onefile_detect_reads_relative_offsets() {
+        let bytes = onefile_fixture(false);
+        let (_dir, path) = write_temp_file("page.u.zip.html", &bytes);
+        let len = fs::metadata(&path).unwrap().len();
+        let archive = onefile_detect(&path, len)
+            .unwrap()
+            .expect("fixture is a onefile archive");
+        assert_eq!(archive.entries.len(), 3);
+        let mut file = File::open(&path).unwrap();
+        let font = &archive.entries[archive.by_name["resources/0.woff2"]];
+        let mut buf = vec![0u8; font.len as usize];
+        file_read_exact_at(&mut file, font.data_offset, &mut buf).unwrap();
+        assert_eq!(buf, (0u8..64).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    fn onefile_detect_plain_html_is_not_an_archive() {
+        let bytes = b"<!DOCTYPE html><html><body>plain</body></html>";
+        let (_dir, path) = write_temp_file("plain.html", bytes);
+        assert!(onefile_detect(&path, bytes.len() as u64).unwrap().is_none());
+    }
+
+    #[test]
+    fn onefile_detect_html_with_trailing_garbage_is_not_an_archive() {
+        let mut bytes = b"<!DOCTYPE html><html></html>".to_vec();
+        bytes.extend_from_slice(b"PK\x03\x04not-a-zip");
+        let (_dir, path) = write_temp_file("garbage.html", &bytes);
+        assert!(onefile_detect(&path, bytes.len() as u64).unwrap().is_none());
+    }
+
+    #[test]
+    fn onefile_detect_plain_zip_without_html_prefix_is_not_an_archive() {
+        let bytes = onefile_fixture_with_prefix(Vec::new(), true, 0);
+        let (_dir, path) = write_temp_file("plain.zip", &bytes);
+        assert!(onefile_detect(&path, bytes.len() as u64).unwrap().is_none());
+    }
+
+    #[test]
+    fn onefile_detect_requires_html_prefix() {
+        let bytes = onefile_fixture_with_prefix(vec![0x00, 0x01, 0x02], true, 0);
+        let (_dir, path) = write_temp_file("not-html.bin", &bytes);
+        assert!(onefile_detect(&path, bytes.len() as u64).unwrap().is_none());
+    }
+
+    #[test]
+    fn onefile_detect_corrupt_central_directory_is_an_error() {
+        let mut bytes = onefile_fixture(true);
+        let pos = bytes
+            .windows(4)
+            .position(|window| window == b"PK\x01\x02")
+            .expect("fixture has a central directory");
+        bytes[pos] = 0x03;
+        let (_dir, path) = write_temp_file("corrupt.u.zip.html", &bytes);
+        assert!(onefile_detect(&path, bytes.len() as u64).is_err());
+    }
+
+    #[test]
+    fn onefile_detect_skips_entries_with_unsupported_methods() {
+        let bytes = onefile_fixture_with_prefix(onefile_prefix(), true, 8);
+        let (_dir, path) = write_temp_file("deflate.u.zip.html", &bytes);
+        let archive = onefile_detect(&path, bytes.len() as u64)
+            .unwrap()
+            .expect("fixture is a onefile archive");
+        assert_eq!(archive.entries.len(), 1);
+        assert!(archive.by_name.contains_key("metadata.json"));
+        assert_eq!(
+            archive.skipped,
+            vec![
+                "resources/0.woff2".to_owned(),
+                "resources/9.bin".to_owned()
+            ]
+        );
+    }
+
+    struct OnefileServer {
+        addr: std::net::SocketAddr,
+        _dir: tempfile::TempDir,
+        shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl OnefileServer {
+        fn new() -> Self {
+            let bytes = onefile_fixture(true);
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("capture.u.zip.html");
+            fs::write(&path, &bytes).unwrap();
+            let canonical = fs::canonicalize(&path).unwrap();
+            let len = fs::metadata(&canonical).unwrap().len();
+            let archive = onefile_detect(&canonical, len).unwrap().unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let shut = shutdown.clone();
+            let mut srv = Server {
+                dir: canonical.parent().unwrap().to_path_buf(),
+                quiet: true,
+                docs_mode: false,
+                single_file: Some(format!(
+                    "/{}",
+                    canonical.file_name().unwrap().to_str().unwrap()
+                )),
+                onefile: Some(std::sync::Arc::new(archive)),
+                fp: PathBuf::new(),
+                html: String::new(),
+            };
+            let thread = std::thread::spawn(move || {
+                listener.set_nonblocking(true).unwrap();
+                while !shut.load(std::sync::atomic::Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            stream.set_nonblocking(false).unwrap();
+                            let _ = srv.handle(stream);
+                        }
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            OnefileServer {
+                addr,
+                _dir: dir,
+                shutdown,
+                thread: Some(thread),
+            }
+        }
+
+        fn get_bytes(&self, path: &str) -> (String, Vec<u8>) {
+            let mut stream = TcpStream::connect(self.addr).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+            let mut resp = Vec::new();
+            let _ = stream.read_to_end(&mut resp);
+            let split = resp
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .unwrap_or(0);
+            (
+                String::from_utf8_lossy(&resp[..split]).into_owned(),
+                resp[split + 4..].to_vec(),
+            )
+        }
+    }
+
+    impl Drop for OnefileServer {
+        fn drop(&mut self) {
+            self.shutdown
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    #[test]
+    fn integration_onefile_serves_the_page_and_archive_entries() {
+        let srv = OnefileServer::new();
+        let (headers, body) = srv.get_bytes("/");
+        assert!(headers.contains("200 OK"), "{headers}");
+        assert!(headers.contains("Content-Type: text/html"), "{headers}");
+        assert_eq!(body, onefile_fixture(true));
+
+        let (headers, body) = srv.get_bytes("/resources/0.woff2");
+        assert!(headers.contains("Content-Type: font/woff2"), "{headers}");
+        assert_eq!(body, (0u8..64).collect::<Vec<u8>>());
+
+        let (headers, body) = srv.get_bytes("/resources/9.bin");
+        assert!(headers.contains("Content-Type: text/html"), "{headers}");
+        assert_eq!(body, b"<html>frame</html>");
+
+        let (headers, _) = srv.get_bytes("/metadata.json");
+        assert!(headers.contains("application/json"), "{headers}");
+
+        let (headers, _) = srv.get_bytes("/nope");
+        assert!(headers.contains("404"), "{headers}");
+
+        let (headers, _) = srv.get_bytes("/resources/../metadata.json");
+        assert!(headers.contains("403"), "{headers}");
+
+        let (headers, _) = srv.get_bytes("/%2e%2e/secret");
+        assert!(headers.contains("403"), "{headers}");
     }
 
     #[test]

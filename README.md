@@ -39,6 +39,10 @@ With no path, `srv` serves the current directory at `http://127.0.0.1:8000`.
 
 For a directory, `index.html` is served when present; otherwise `srv` shows a listing. `.md` and `.markdown` files render as HTML. Mermaid `flowchart` blocks render as inline SVG on standalone Markdown pages; the `--docs` viewer and unsupported Mermaid types show a code block instead. Only GET requests are served. `srv` writes startup, request, and error messages to standard error; `-q` suppresses request messages.
 
+## Onefile archives
+
+If the file argument is an HTML document with a ZIP archive appended — the `.u.zip.html` format that the onefile capture extension produces — `srv` detects the embedded archive and serves the page at `/` and each entry at its archive path (for example `/resources/0.woff2`), with the MIME types recorded in the archive's `metadata.json`. `/` answers with the file whole because the archive's loader fetches the page's own URL to recover the entries; any other unknown path returns 404.
+
 Path traversal using `..` is rejected, but symlinked directories under the selected path can expose files outside it. Serve only directories whose symlinks you trust.
 
 For help, use `srv --help` or [open an issue](https://github.com/laputa-systems/srv/issues). Licensed under [MIT](LICENSE).
