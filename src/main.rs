@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use pulldown_cmark::{Options, Parser, html};
+use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd, html};
 
 const LISTING_PRELUDE: &str = "<head><link rel=icon href=data:,><style>* { font-family: monospace; } \
      table { border: none; margin: 1rem; } td { padding-right: 2rem; }</style></head>\n\
@@ -382,9 +382,81 @@ fn render_markdown_fragment(markdown: &str, html_out: &mut String) {
 fn render_markdown(markdown: &str, html_out: &mut String) {
     html_out.clear();
     html_out.push_str(MARKDOWN_PRELUDE);
-    let parser = Parser::new_ext(markdown, gfm_options());
-    html::push_html(html_out, parser);
+    let events = mermaid_events(Parser::new_ext(markdown, gfm_options()));
+    html::push_html(html_out, events.into_iter());
     html_out.push_str(MARKDOWN_POSTLUDE);
+}
+
+fn mermaid_events<'a>(parser: Parser<'a>) -> Vec<Event<'a>> {
+    let mut out = Vec::new();
+    let mut iter = parser.into_iter();
+    let mut diagram_index = 0usize;
+    while let Some(event) = iter.next() {
+        let is_mermaid = matches!(
+            &event,
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(lang)))
+                if lang.trim().eq_ignore_ascii_case("mermaid")
+        );
+        if !is_mermaid {
+            out.push(event);
+            continue;
+        }
+        let mut raw = vec![event];
+        let mut code = String::new();
+        for event in iter.by_ref() {
+            match event {
+                Event::Text(text) => {
+                    code.push_str(&text);
+                    raw.push(Event::Text(text));
+                }
+                end @ Event::End(TagEnd::CodeBlock) => {
+                    raw.push(end);
+                    break;
+                }
+                other => raw.push(other),
+            }
+        }
+        diagram_index += 1;
+        match mermaid_flowchart_svg(&code, &format!("srv-mermaid-{diagram_index}")) {
+            Some(svg) => out.push(Event::Html(svg.into())),
+            None => out.extend(raw),
+        }
+    }
+    out
+}
+
+fn mermaid_flowchart_svg(code: &str, diagram_id: &str) -> Option<String> {
+    use merman::svg;
+    use std::sync::Arc;
+
+    let policy = svg::TextMeasurementPolicy::uniform(svg::TextMeasurementProfile::new(
+        svg::TextMeasurementProfileIdentity::new(
+            svg::MeasurementProfileId::new("srv.svg-text").ok()?,
+            env!("CARGO_PKG_VERSION"),
+        )
+        .ok()?,
+        Arc::new(svg::DeterministicTextMeasurer {
+            char_width_factor: 0.62,
+            line_height_factor: 0.0,
+        }),
+    ));
+    let environment = merman::SvgEnvironment::deterministic().with_text_measurement_policy(policy);
+    let request = merman::SvgRequest {
+        environment,
+        options: svg::SvgRenderOptions {
+            diagram_id: Some(diagram_id.to_owned()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    match merman::Renderer::new().render(merman::RenderRequest::svg(
+        code,
+        merman::OperationControl::new(),
+        request,
+    )) {
+        Ok(merman::RenderOutput::Svg(Some(output))) => Some(output.svg().to_owned()),
+        _ => None,
+    }
 }
 
 fn glob_match(pattern: &str, text: &str) -> bool {
@@ -1431,6 +1503,46 @@ mod tests {
         assert!(!is_markdown(Path::new("README")));
     }
 
+    fn render_page(markdown: &str) -> String {
+        let mut out = String::new();
+        render_markdown(markdown, &mut out);
+        out
+    }
+
+    #[test]
+    fn markdown_mermaid_flowchart_renders_inline_svg() {
+        let html = render_page(
+            "```mermaid\nflowchart TD\n  start[\"Parent agent\"] --> tier{\"Which tier?\"}\n  tier -->|expert| harness{\"Harness?\"}\n  harness -->|OpenCode| oc[\"OpenCode native expert agent<br/>effort max\"]\n  other --> start\n```\n",
+        );
+        assert!(html.contains("<svg"), "{html}");
+        assert!(html.contains("viewBox="), "{html}");
+        assert!(html.contains("Parent agent"), "{html}");
+        assert!(!html.contains("language-mermaid"), "{html}");
+    }
+
+    #[test]
+    fn markdown_mermaid_diagrams_get_unique_scoped_ids() {
+        let html = render_page(
+            "```mermaid\nflowchart TD\n  a --> b\n```\n\n```mermaid\nflowchart TD\n  c --> d\n```\n",
+        );
+        assert!(html.contains("srv-mermaid-1"), "{html}");
+        assert!(html.contains("srv-mermaid-2"), "{html}");
+    }
+
+    #[test]
+    fn markdown_mermaid_unsupported_type_falls_back_to_code() {
+        let html = render_page("```mermaid\nsequenceDiagram\n  Alice->>Bob: hi\n```\n");
+        assert!(html.contains("language-mermaid"), "{html}");
+        assert!(!html.contains("<svg"), "{html}");
+    }
+
+    #[test]
+    fn markdown_mermaid_malformed_diagram_falls_back_to_code() {
+        let html = render_page("```mermaid\nflowchart TD\n  broken[unclosed\n```\n");
+        assert!(html.contains("language-mermaid"), "{html}");
+        assert!(!html.contains("<svg"), "{html}");
+    }
+
     struct TestServer {
         addr: std::net::SocketAddr,
         _dir: tempfile::TempDir,
@@ -1673,6 +1785,35 @@ mod tests {
         assert!(body.contains("<table>"));
         assert!(body.contains("<td>1</td>"));
         assert!(body.contains("type=\"checkbox\""));
+    }
+
+    #[test]
+    fn integration_markdown_mermaid_renders_inline_svg() {
+        let srv = TestServer::new();
+        fs::write(
+            srv._dir.path().join("diagram.md"),
+            "# Diagram\n\n```mermaid\nflowchart TD\n  start[\"Parent agent\"] --> tier{\"Which tier?\"}\n  tier -->|expert| harness{\"Harness?\"}\n  harness -->|OpenCode| oc[\"OpenCode native expert agent<br/>effort max\"]\n```\n",
+        )
+        .unwrap();
+        let (headers, body) = srv.get("/diagram.md");
+        assert!(headers.contains("200 OK"));
+        assert!(body.contains("<svg"), "{body}");
+        assert!(body.contains("Parent agent"), "{body}");
+        assert!(!body.contains("language-mermaid"), "{body}");
+    }
+
+    #[test]
+    fn integration_docs_mode_mermaid_stays_a_code_block() {
+        let srv = TestServer::new_docs();
+        fs::write(
+            srv._dir.path().join("diagram.md"),
+            "```mermaid\nflowchart TD\n  a --> b\n```\n",
+        )
+        .unwrap();
+        let (headers, body) = srv.get("/__docs__/md?path=diagram.md");
+        assert!(headers.contains("200 OK"));
+        assert!(body.contains("language-mermaid"), "{body}");
+        assert!(!body.contains("<svg"), "{body}");
     }
 
     #[test]

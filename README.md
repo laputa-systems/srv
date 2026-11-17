@@ -1,6 +1,6 @@
 # srv
 
-Serve a file or directory over HTTP. Directory listings are browsable, Markdown files render as HTML, and `--docs` opens a browser for a tree of Markdown files.
+Serve a file or directory over HTTP. Directory listings are browsable, Markdown files render as HTML, and `--docs` opens a browser for a tree of Markdown files. Mermaid flowchart code blocks in Markdown files render as inline SVG, offline and without JavaScript; any other Mermaid diagram type, or a diagram that fails to parse, is shown as a plain code block.
 
 ![srv directory listing](.github/screenshot.png)
 
@@ -37,7 +37,7 @@ With no path, `srv` serves the current directory at `http://127.0.0.1:8000`.
 | `-h`, `--help` | Print the complete reference and examples to standard output. |
 | `-V`, `--version` | Print the version. |
 
-For a directory, `index.html` is served when present; otherwise `srv` shows a listing. `.md` and `.markdown` files render as HTML. Only GET requests are served. `srv` writes startup, request, and error messages to standard error; `-q` suppresses request messages.
+For a directory, `index.html` is served when present; otherwise `srv` shows a listing. `.md` and `.markdown` files render as HTML. Mermaid `flowchart` blocks render as inline SVG on standalone Markdown pages; the `--docs` viewer and unsupported Mermaid types show a code block instead. Only GET requests are served. `srv` writes startup, request, and error messages to standard error; `-q` suppresses request messages.
 
 Path traversal using `..` is rejected, but symlinked directories under the selected path can expose files outside it. Serve only directories whose symlinks you trust.
 
