@@ -239,9 +239,11 @@ def main():
                 counts[result] += 1
                 if result != 'timeout':
                     pending.remove(name)
-            for number, name in enumerate(n for n, v in results.items() if v == 'timeout'):
-                regex = '^' + re.sub(r'([\\.^$|?*+()\[\]{}])', r'\\\1', name) + '$'
-                retry_args = args + ['--re', regex]
+            timeouts = [name for name, result in results.items() if result == 'timeout']
+            inventory = listing(args) if timeouts else []
+            for number, name in enumerate(timeouts):
+                retry_shard = f'{inventory.index(name)}/{len(inventory)}'
+                retry_args = args + ['--shard', retry_shard, '--sharding', 'round-robin']
                 if listing(retry_args) != [name]:
                     raise GateError(f'timeout rerun selection error: {name}')
                 out = run_root / f'retry-{index}-{number}'
