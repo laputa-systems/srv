@@ -30,8 +30,12 @@ jobs:
         run: make test
 
   mutants:
-    name: mutants
+    name: mutants (${{ matrix.shard }})
     runs-on: ubuntu-26.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0/4, 1/4, 2/4, 3/4]
     permissions:
       contents: read
     steps:
@@ -45,4 +49,12 @@ jobs:
       - name: mutants
         env:
           BASE_REF: ${{ github.base_ref }}
+          MUTANTS_SHARD: ${{ matrix.shard }}
         run: make mutants-diff BASE="origin/$BASE_REF"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: mutation-evidence-${{ strategy.job-index }}
+          path: .work/mutants-gate/
+          include-hidden-files: true
+          retention-days: 7

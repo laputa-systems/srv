@@ -4,7 +4,7 @@ import tempfile
 import unittest
 
 from mutants_gate import (
-    GateError, classify, parse_changes, parse_listing, read_results, selected_or_fail, scope_for, verdict,
+    GateError, classify, parse_changes, parse_listing, read_results, scope_for, selected_or_fail, shard_position, verdict,
 )
 
 CONFIG = {'irrelevant': ['*.md', 'LICENSE'], 'scope': ['src/main.rs']}
@@ -45,6 +45,13 @@ class SelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, 'empty selection'):
             selected_or_fail(True, [])
         selected_or_fail(False, [])
+
+    def test_shard_numbers_match_cargo_mutants(self):
+        self.assertEqual(shard_position('0/1'), (0, 1))
+        self.assertEqual(shard_position('2/4'), (2, 4))
+        for invalid in ('4/4', '0/0', '-1/4', '1', 'latest'):
+            with self.subTest(shard=invalid), self.assertRaisesRegex(GateError, 'MUTANTS_SHARD'):
+                shard_position(invalid)
 
 
 class ResultsTests(unittest.TestCase):
