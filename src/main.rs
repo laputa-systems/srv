@@ -1841,7 +1841,8 @@ mod tests {
             ("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("gif", "image/gif"),
             ("svg", "image/svg+xml"), ("ico", "image/x-icon"), ("webp", "image/webp"),
             ("mp4", "video/mp4"), ("webm", "video/webm"), ("mp3", "audio/mpeg"),
-            ("ogg", "audio/ogg"), ("wav", "audio/wave"), ("pdf", "application/pdf"),
+            ("ogg", "audio/ogg"), ("wav", "audio/wave"), ("woff", "font/woff"),
+            ("woff2", "font/woff2"), ("pdf", "application/pdf"),
             ("wasm", "application/wasm"), ("zip", "application/zip"),
             ("gz", "application/gzip"), ("tgz", "application/gzip"),
         ];
