@@ -4,7 +4,8 @@ import tempfile
 import unittest
 
 from mutants_gate import (
-    GateError, classify, parse_changes, parse_listing, read_results, scope_for, selected_or_fail, shard_position, verdict,
+    GateError, classify, copy_replay_source, parse_changes, parse_listing, read_results, scope_for,
+    selected_or_fail, shard_position, verdict,
 )
 
 CONFIG = {'irrelevant': ['*.md', 'LICENSE'], 'scope': ['src/main.rs']}
@@ -91,6 +92,32 @@ class ResultsTests(unittest.TestCase):
         verdict({'mutant': 'confirmed hang'})
         self.write()
         verdict(read_results(self.path, ['mutant']))
+
+
+class ReplaySourceTests(unittest.TestCase):
+    def test_copy_preserves_current_files_and_ignores_removed_ones(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'root'
+            source = root / 'src'
+            source.mkdir(parents=True)
+            (source / 'main.rs').write_text('current source')
+            destination = Path(directory) / 'replay'
+            copy_replay_source(root, destination, ['src/main.rs', 'src/deleted.rs'])
+            self.assertEqual((destination / 'src/main.rs').read_text(), 'current source')
+            self.assertFalse((destination / 'src/deleted.rs').exists())
+            (destination / 'src/main.rs').write_text('mutation')
+            self.assertEqual((source / 'main.rs').read_text(), 'current source')
+
+    def test_copy_refuses_a_path_through_an_external_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'root'
+            root.mkdir()
+            outside = Path(directory) / 'outside'
+            outside.mkdir()
+            (outside / 'main.rs').write_text('outside')
+            (root / 'src').symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(GateError, 'unsupported replay input'):
+                copy_replay_source(root, Path(directory) / 'replay', ['src/main.rs'])
 
 
 if __name__ == '__main__':

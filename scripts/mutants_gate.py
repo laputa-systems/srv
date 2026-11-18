@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import tomllib
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = ROOT / '.cargo/mutants-gate.toml'
 WORK = ROOT / '.work/mutants-gate'
+SCRATCH = ROOT / '.work/tmp'
 GATE = {'Makefile', '.github/workflows/ci.yml', '.cargo/mutants.toml',
         '.cargo/mutants-gate.toml', 'scripts/mutants_gate.py', 'scripts/test_mutants_gate.py'}
 
@@ -26,6 +28,19 @@ def untested(pending):
     shown = ', '.join(pending[:10])
     more = f' and {len(pending) - 10} more' if len(pending) > 10 else ''
     return f'budget exhausted; {len(pending)} untested: {shown}{more}'
+
+
+def copy_replay_source(root, destination, paths):
+    for relative in paths:
+        path = Path(relative)
+        source = root / path
+        if (path.is_absolute() or '..' in path.parts or not source.resolve().is_relative_to(root.resolve())
+                or source.is_symlink() or (source.exists() and not source.is_file())):
+            raise GateError(f'unsupported replay input: {relative}')
+        if source.is_file():
+            target = destination / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
 
 
 def classify(path, status, config):
@@ -147,12 +162,14 @@ def main():
     excluded = 'unavailable'
     dirty = ''
     pending = []
+    replay = None
 
-    def run(args, *, allowed=(0,), capture=True):
+    def run(args, *, allowed=(0,), capture=True, cwd=ROOT):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise GateError(untested(pending))
-        process = subprocess.Popen(args, cwd=ROOT, text=True, stdout=subprocess.PIPE if capture else None,
+        env = None if cwd == ROOT else dict(os.environ, CARGO_TARGET_DIR=str(cwd / 'target'))
+        process = subprocess.Popen(args, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE if capture else None,
                                    stderr=subprocess.PIPE if capture else None, start_new_session=True)
         try:
             stdout, stderr = process.communicate(timeout=remaining)
@@ -164,8 +181,8 @@ def main():
             raise GateError(f'command failed ({process.returncode}): {args}: {stderr or ""}')
         return stdout if capture else ''
 
-    def listing(args):
-        return parse_listing(run(common + ['--list', '--json'] + args))
+    def listing(args, *, cwd=ROOT):
+        return parse_listing(run(common + ['--list', '--json'] + args, cwd=cwd))
 
     try:
         base_sha = run(['git', 'merge-base', base, 'HEAD']).strip()
@@ -241,15 +258,21 @@ def main():
                     pending.remove(name)
             timeouts = [name for name, result in results.items() if result == 'timeout']
             inventory = listing(args) if timeouts else []
+            if timeouts and replay is None:
+                SCRATCH.mkdir(parents=True, exist_ok=True)
+                replay = tempfile.TemporaryDirectory(prefix='mutant-replay-', dir=SCRATCH)
+                replay_root = Path(replay.name)
+                paths = run(['git', 'ls-files', '--cached', '--others', '--exclude-standard', '-z'])
+                copy_replay_source(ROOT, replay_root, filter(None, paths.split('\0')))
             for number, name in enumerate(timeouts):
                 retry_shard = f'{inventory.index(name)}/{len(inventory)}'
                 retry_args = args + ['--shard', retry_shard, '--sharding', 'round-robin']
-                if listing(retry_args) != [name]:
+                if listing(retry_args, cwd=replay_root) != [name]:
                     raise GateError(f'timeout rerun selection error: {name}')
                 out = run_root / f'retry-{index}-{number}'
-                run(common + ['--baseline', 'skip', '--timeout', str(config['timeout_seconds'] * 3),
+                run(common + ['--in-place', '--baseline', 'skip', '--timeout', str(config['timeout_seconds'] * 3),
                     '--build-timeout', str(config['build_timeout_seconds']), '--jobs', '1',
-                    '--output', str(out)] + retry_args, allowed=(0, 2, 3), capture=False)
+                    '--output', str(out)] + retry_args, allowed=(0, 2, 3), capture=False, cwd=replay_root)
                 rerun = read_results(out / 'mutants.out/outcomes.json', [name])[name]
                 counts['timeout'] -= 1
                 if rerun == 'timeout':
@@ -262,6 +285,8 @@ def main():
                 pending.remove(name)
             verdict(results)
     finally:
+        if replay is not None:
+            replay.cleanup()
         print('\nEvidence:', flush=True)
         print(f'base: {base_sha}; head: {head}{dirty}; {version}', flush=True)
         print(f'config sha256: {hashlib.sha256(CONFIG.read_bytes()).hexdigest()}; excluded mutants: {excluded}', flush=True)
