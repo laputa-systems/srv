@@ -26,3 +26,16 @@ using Python 3.11 or newer.
 Run the normal hosted matrix on the updated head to measure the
 remaining timeouts and cost. The 25 surviving identities still need
 decisions before the whole-change candidate can qualify.
+
+[Run 44252130017](https://github.com/laputa-systems/srv/actions/runs/44252130017)
+reproduced the initial outcomes at `d785317` but rejected the replay
+arguments. Cargo-mutants 27.1.0 forbids the copy-only `--gitignore`
+and explicit `--jobs` flags with `--in-place`. The corrected command
+uses the tool's serial in-place mode.
+
+On macOS arm64, two exact retries in the same disposable copy
+each confirmed the 30-second timeout. Native shards `32/376` and
+`45/376` selected one identity apiece, and the original source
+bytes were restored after each command. The first build took
+77.2 seconds. The second took 4.8 with the reused target directory.
+Hosted results and total runner cost remain open.

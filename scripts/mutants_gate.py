@@ -154,7 +154,8 @@ def main():
     offset, total = shard_position(shard)
     shard_args = ['--shard', shard, '--sharding', 'round-robin'] if total > 1 else []
     base = sys.argv[1]
-    common = ['cargo', 'mutants', '--gitignore', 'true']
+    tool = ['cargo', 'mutants']
+    common = tool + ['--gitignore', 'true']
     phases = []
     counts = {'caught': 0, 'missed': 0, 'unviable': 0, 'timeout': 0, 'confirmed hang': 0}
     hangs = []
@@ -182,7 +183,8 @@ def main():
         return stdout if capture else ''
 
     def listing(args, *, cwd=ROOT):
-        return parse_listing(run(common + ['--list', '--json'] + args, cwd=cwd))
+        invocation = common if cwd == ROOT else tool + ['--in-place']
+        return parse_listing(run(invocation + ['--list', '--json'] + args, cwd=cwd))
 
     try:
         base_sha = run(['git', 'merge-base', base, 'HEAD']).strip()
@@ -270,8 +272,8 @@ def main():
                 if listing(retry_args, cwd=replay_root) != [name]:
                     raise GateError(f'timeout rerun selection error: {name}')
                 out = run_root / f'retry-{index}-{number}'
-                run(common + ['--in-place', '--baseline', 'skip', '--timeout', str(config['timeout_seconds'] * 3),
-                    '--build-timeout', str(config['build_timeout_seconds']), '--jobs', '1',
+                run(tool + ['--in-place', '--baseline', 'skip', '--timeout', str(config['timeout_seconds'] * 3),
+                    '--build-timeout', str(config['build_timeout_seconds']),
                     '--output', str(out)] + retry_args, allowed=(0, 2, 3), capture=False, cwd=replay_root)
                 rerun = read_results(out / 'mutants.out/outcomes.json', [name])[name]
                 counts['timeout'] -= 1
