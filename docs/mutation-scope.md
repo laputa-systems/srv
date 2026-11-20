@@ -1,6 +1,8 @@
-## Report
+# Request-admission mutation scope
 
-**Tests (request-admission mutation survivors)**
+The required mutation gate (`critical` in `.cargo/mutants-gate.toml`) covers request admission. This table maps each survivor of the first run of that scope to the test that now kills it, or records why it needs none.
+
+
 
 CI run on 147dd84 selected 154 critical mutants: 115 caught, 8 unviable, 23 missed, 8 timeout. Each survivor below is killed by the named test, was proven by applying the mutation by hand, or is an equivalent or hang case.
 
