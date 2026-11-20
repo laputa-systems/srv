@@ -2247,6 +2247,28 @@ mod tests {
     }
 
     #[test]
+    fn onefile_rejects_each_multidisk_and_zip64_field() {
+        let original = onefile_fixture(true);
+        let eocd = original.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap();
+        for (field, value, expected) in [
+            (4, vec![1, 0], "the embedded ZIP spans multiple disks"),
+            (6, vec![1, 0], "the embedded ZIP spans multiple disks"),
+            (8, vec![0, 0], "the embedded ZIP spans multiple disks"),
+            (12, vec![255; 4], "the embedded ZIP uses ZIP64 fields"),
+            (16, vec![255; 4], "the embedded ZIP uses ZIP64 fields"),
+        ] {
+            let mut bytes = original.clone();
+            bytes[eocd + field..eocd + field + value.len()].copy_from_slice(&value);
+            let (_dir, path) = write_temp_file("archive", &bytes);
+            assert_eq!(onefile_detect(&path, bytes.len() as u64).err().as_deref(), Some(expected), "field {field}");
+        }
+        let mut bytes = original;
+        bytes[eocd + 8..eocd + 12].fill(255);
+        let (_dir, path) = write_temp_file("archive", &bytes);
+        assert_eq!(onefile_detect(&path, bytes.len() as u64).err().as_deref(), Some("the embedded ZIP uses ZIP64 fields"));
+    }
+
+    #[test]
     fn onefile_detect_reads_file_absolute_offsets() {
         let bytes = onefile_fixture(true);
         let (_dir, path) = write_temp_file("page.u.zip.html", &bytes);
