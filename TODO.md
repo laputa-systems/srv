@@ -8,4 +8,3 @@ Next: 6
 - **Recommendation:** If performance becomes a project goal, build representative checked end-to-end workloads, record CPU, memory and I/O, and add profiling and paired comparison before setting gates.
 - **Fix with:** bench-pyramid
 - **Effort:** M
-
