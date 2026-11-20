@@ -2405,6 +2405,65 @@ mod tests {
         assert_eq!(archive.entries.len(), 3);
     }
 
+    const MIB: usize = 1024 * 1024;
+
+    fn eocd_pos(bytes: &[u8]) -> usize {
+        bytes.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap()
+    }
+
+    #[test]
+    fn onefile_detect_central_directory_limit_is_sixteen_mib() {
+        let base = onefile_fixture(true);
+        let eocd = eocd_pos(&base);
+        let cd_size = u32_at(&base, eocd + 12) as usize;
+        for (size, expect_ok) in [(16 * MIB, true), (16 * MIB + 1, false)] {
+            let mut bytes = base.clone();
+            bytes.splice(eocd..eocd, vec![0u8; size - cd_size]);
+            let eocd = eocd_pos(&bytes);
+            bytes[eocd + 12..eocd + 16].copy_from_slice(&(size as u32).to_le_bytes());
+            let result = detect_bytes(&bytes);
+            if expect_ok {
+                assert_eq!(result.unwrap().expect("archive").entries.len(), 3);
+            } else {
+                assert_eq!(
+                    result.err().as_deref(),
+                    Some("the embedded ZIP central directory is unreasonably large")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn onefile_detect_metadata_limit_is_eight_mib() {
+        let json = br#"{"entries":[{"name":"resources/9.bin","mime":"text/plain"}]}"#;
+        for (size, mime) in [(8 * MIB, Some("text/plain")), (8 * MIB + 1, None)] {
+            let mut metadata = json.to_vec();
+            metadata.resize(size, b' ');
+            let entries = [
+                ("resources/9.bin", b"<html>frame</html>".to_vec(), 0),
+                ("metadata.json", metadata, 0),
+            ];
+            let bytes = build_onefile_zip(onefile_prefix(), &entries, true);
+            let archive = detect_bytes(&bytes).unwrap().expect("archive");
+            assert_eq!(
+                archive.entries[archive.by_name["resources/9.bin"]].mime.as_deref(),
+                mime,
+                "metadata of {size} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn onefile_detect_central_entry_may_fill_the_directory_exactly() {
+        let entries = [("", Vec::new(), 0)];
+        let bytes = build_onefile_zip(onefile_prefix(), &entries, true);
+        let eocd = eocd_pos(&bytes);
+        assert_eq!(u32_at(&bytes, eocd + 12), 46);
+        let archive = detect_bytes(&bytes).unwrap().expect("archive");
+        assert_eq!(archive.entries.len(), 1);
+        assert!(archive.by_name.contains_key(""));
+    }
+
     struct OnefileServer {
         addr: std::net::SocketAddr,
         _dir: tempfile::TempDir,
