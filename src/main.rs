@@ -2464,6 +2464,78 @@ mod tests {
         assert!(archive.by_name.contains_key(""));
     }
 
+    /// Offsets of the central directory entries of a file-absolute fixture.
+    fn central_entries(bytes: &[u8]) -> Vec<usize> {
+        let eocd = eocd_pos(bytes);
+        let mut at = u32_at(bytes, eocd + 16) as usize;
+        let mut entries = Vec::new();
+        for _ in 0..u16_at(bytes, eocd + 10) {
+            entries.push(at);
+            at += 46 + usize::from(u16_at(bytes, at + 28));
+        }
+        entries
+    }
+
+    #[test]
+    fn onefile_detect_skips_an_entry_with_either_zip64_size() {
+        for field in [20, 24] {
+            let mut bytes = onefile_fixture(true);
+            let first = central_entries(&bytes)[0];
+            bytes[first + field..first + field + 4].copy_from_slice(&[255; 4]);
+            let archive = detect_bytes(&bytes).unwrap().expect("archive");
+            assert_eq!(archive.skipped, vec!["resources/0.woff2".to_owned()], "field {field}");
+            assert_eq!(archive.entries.len(), 2);
+        }
+    }
+
+    #[test]
+    fn onefile_detect_rejects_entries_that_start_at_the_central_directory() {
+        let mut bytes = onefile_fixture(true);
+        let cd = u32_at(&bytes, eocd_pos(&bytes) + 16);
+        for at in central_entries(&bytes) {
+            bytes[at + 42..at + 46].copy_from_slice(&cd.to_le_bytes());
+        }
+        assert_eq!(
+            detect_bytes(&bytes).err().as_deref(),
+            Some("entry resources/0.woff2 has a bad local header")
+        );
+    }
+
+    #[test]
+    fn onefile_detect_data_offset_follows_the_local_name_and_extra_field() {
+        let mut bytes = onefile_fixture(true);
+        let first = central_entries(&bytes)[0];
+        let local = u32_at(&bytes, first + 42) as usize;
+        bytes[local + 28..local + 30].copy_from_slice(&4_u16.to_le_bytes());
+        let archive = detect_bytes(&bytes).unwrap().expect("archive");
+        let entry = &archive.entries[archive.by_name["resources/0.woff2"]];
+        assert_eq!(entry.data_offset, (local + 30 + "resources/0.woff2".len() + 4) as u64);
+    }
+
+    #[test]
+    fn onefile_detect_entry_data_may_end_exactly_at_the_central_directory() {
+        let base = onefile_fixture(true);
+        let first = central_entries(&base)[0];
+        let cd = u32_at(&base, eocd_pos(&base) + 16) as usize;
+        let data = u32_at(&base, first + 42) as usize + 30 + "resources/0.woff2".len();
+        for (size, overrun) in [(cd - data, false), (cd - data + 1, true)] {
+            let mut bytes = base.clone();
+            for field in [20, 24] {
+                bytes[first + field..first + field + 4].copy_from_slice(&(size as u32).to_le_bytes());
+            }
+            let result = detect_bytes(&bytes);
+            if overrun {
+                assert_eq!(
+                    result.err().as_deref(),
+                    Some("entry resources/0.woff2 overruns the archive")
+                );
+            } else {
+                let archive = result.unwrap().expect("archive");
+                assert_eq!(archive.entries[archive.by_name["resources/0.woff2"]].len, size as u64);
+            }
+        }
+    }
+
     struct OnefileServer {
         addr: std::net::SocketAddr,
         _dir: tempfile::TempDir,
