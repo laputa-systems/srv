@@ -4,4 +4,6 @@ exclude_re = [
     'replace \| with \^ in percent_decode',
     # Re-entering the star branch with i = star_i reaches the same state as i = star_i + 1.
     'replace \+ with \* in glob_match',
+    # The `cd_abs == cd_offset` branch above has already taken equality, so `>` and `>=` choose the same arm.
+    'src/main\.rs:858:22: replace > with >= in parse_onefile_candidate',
 ]
