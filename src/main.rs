@@ -2376,6 +2376,35 @@ mod tests {
         );
     }
 
+    fn detect_bytes(bytes: &[u8]) -> Result<Option<OnefileArchive>, String> {
+        let (_dir, path) = write_temp_file("archive", bytes);
+        onefile_detect(&path, bytes.len() as u64)
+    }
+
+    #[test]
+    fn onefile_detect_minimum_length_is_one_past_an_empty_eocd() {
+        // A lone EOCD with a multi-disk field is Err only once the file is
+        // longer than the EOCD itself.
+        let mut eocd = vec![0u8; EOCD_LEN];
+        eocd[..4].copy_from_slice(&EOCD_SIG.to_le_bytes());
+        eocd[4] = 1;
+        assert!(detect_bytes(&eocd).unwrap().is_none());
+        eocd.insert(0, b'<');
+        assert_eq!(
+            detect_bytes(&eocd).err().as_deref(),
+            Some("the embedded ZIP spans multiple disks")
+        );
+    }
+
+    #[test]
+    fn onefile_detect_prefers_the_real_eocd_over_a_later_signature() {
+        let mut bytes = onefile_fixture(true);
+        bytes.extend_from_slice(&EOCD_SIG.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; EOCD_LEN - 4]);
+        let archive = detect_bytes(&bytes).unwrap().expect("the earlier EOCD is real");
+        assert_eq!(archive.entries.len(), 3);
+    }
+
     struct OnefileServer {
         addr: std::net::SocketAddr,
         _dir: tempfile::TempDir,
