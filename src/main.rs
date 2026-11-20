@@ -1841,7 +1841,8 @@ mod tests {
             ("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("gif", "image/gif"),
             ("svg", "image/svg+xml"), ("ico", "image/x-icon"), ("webp", "image/webp"),
             ("mp4", "video/mp4"), ("webm", "video/webm"), ("mp3", "audio/mpeg"),
-            ("ogg", "audio/ogg"), ("wav", "audio/wave"), ("pdf", "application/pdf"),
+            ("ogg", "audio/ogg"), ("wav", "audio/wave"), ("woff", "font/woff"),
+            ("woff2", "font/woff2"), ("pdf", "application/pdf"),
             ("wasm", "application/wasm"), ("zip", "application/zip"),
             ("gz", "application/gzip"), ("tgz", "application/gzip"),
         ];
@@ -1885,7 +1886,8 @@ mod tests {
             "```mermaid\nflowchart TD\n  start[\"Parent agent\"] --> tier{\"Which tier?\"}\n  tier -->|expert| harness{\"Harness?\"}\n  harness -->|OpenCode| oc[\"OpenCode native expert agent<br/>effort max\"]\n  other --> start\n```\n",
         );
         assert!(html.contains("<svg"), "{html}");
-        assert!(html.contains("viewBox="), "{html}");
+        let view_box = html.split("viewBox=\"").nth(1).unwrap().split('"').next().unwrap();
+        assert_eq!(view_box.split_ascii_whitespace().nth(3), Some("798"));
         assert!(html.contains("Parent agent"), "{html}");
         assert!(!html.contains("language-mermaid"), "{html}");
     }
@@ -2245,6 +2247,28 @@ mod tests {
     }
 
     #[test]
+    fn onefile_rejects_each_multidisk_and_zip64_field() {
+        let original = onefile_fixture(true);
+        let eocd = original.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap();
+        for (field, value, expected) in [
+            (4, vec![1, 0], "the embedded ZIP spans multiple disks"),
+            (6, vec![1, 0], "the embedded ZIP spans multiple disks"),
+            (8, vec![0, 0], "the embedded ZIP spans multiple disks"),
+            (12, vec![255; 4], "the embedded ZIP uses ZIP64 fields"),
+            (16, vec![255; 4], "the embedded ZIP uses ZIP64 fields"),
+        ] {
+            let mut bytes = original.clone();
+            bytes[eocd + field..eocd + field + value.len()].copy_from_slice(&value);
+            let (_dir, path) = write_temp_file("archive", &bytes);
+            assert_eq!(onefile_detect(&path, bytes.len() as u64).err().as_deref(), Some(expected), "field {field}");
+        }
+        let mut bytes = original;
+        bytes[eocd + 8..eocd + 12].fill(255);
+        let (_dir, path) = write_temp_file("archive", &bytes);
+        assert_eq!(onefile_detect(&path, bytes.len() as u64).err().as_deref(), Some("the embedded ZIP uses ZIP64 fields"));
+    }
+
+    #[test]
     fn onefile_detect_reads_file_absolute_offsets() {
         let bytes = onefile_fixture(true);
         let (_dir, path) = write_temp_file("page.u.zip.html", &bytes);
@@ -2350,6 +2374,166 @@ mod tests {
                 "resources/9.bin".to_owned()
             ]
         );
+    }
+
+    fn detect_bytes(bytes: &[u8]) -> Result<Option<OnefileArchive>, String> {
+        let (_dir, path) = write_temp_file("archive", bytes);
+        onefile_detect(&path, bytes.len() as u64)
+    }
+
+    #[test]
+    fn onefile_detect_minimum_length_is_one_past_an_empty_eocd() {
+        // A lone EOCD with a multi-disk field is Err only once the file is
+        // longer than the EOCD itself.
+        let mut eocd = vec![0u8; EOCD_LEN];
+        eocd[..4].copy_from_slice(&EOCD_SIG.to_le_bytes());
+        eocd[4] = 1;
+        assert!(detect_bytes(&eocd).unwrap().is_none());
+        eocd.insert(0, b'<');
+        assert_eq!(
+            detect_bytes(&eocd).err().as_deref(),
+            Some("the embedded ZIP spans multiple disks")
+        );
+    }
+
+    #[test]
+    fn onefile_detect_prefers_the_real_eocd_over_a_later_signature() {
+        let mut bytes = onefile_fixture(true);
+        bytes.extend_from_slice(&EOCD_SIG.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; EOCD_LEN - 4]);
+        let archive = detect_bytes(&bytes).unwrap().expect("the earlier EOCD is real");
+        assert_eq!(archive.entries.len(), 3);
+    }
+
+    const MIB: usize = 1024 * 1024;
+
+    fn eocd_pos(bytes: &[u8]) -> usize {
+        bytes.windows(4).rposition(|w| w == b"PK\x05\x06").unwrap()
+    }
+
+    #[test]
+    fn onefile_detect_central_directory_limit_is_sixteen_mib() {
+        let base = onefile_fixture(true);
+        let eocd = eocd_pos(&base);
+        let cd_size = u32_at(&base, eocd + 12) as usize;
+        for (size, expect_ok) in [(16 * MIB, true), (16 * MIB + 1, false)] {
+            let mut bytes = base.clone();
+            bytes.splice(eocd..eocd, vec![0u8; size - cd_size]);
+            let eocd = eocd_pos(&bytes);
+            bytes[eocd + 12..eocd + 16].copy_from_slice(&(size as u32).to_le_bytes());
+            let result = detect_bytes(&bytes);
+            if expect_ok {
+                assert_eq!(result.unwrap().expect("archive").entries.len(), 3);
+            } else {
+                assert_eq!(
+                    result.err().as_deref(),
+                    Some("the embedded ZIP central directory is unreasonably large")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn onefile_detect_metadata_limit_is_eight_mib() {
+        let json = br#"{"entries":[{"name":"resources/9.bin","mime":"text/plain"}]}"#;
+        for (size, mime) in [(8 * MIB, Some("text/plain")), (8 * MIB + 1, None)] {
+            let mut metadata = json.to_vec();
+            metadata.resize(size, b' ');
+            let entries = [
+                ("resources/9.bin", b"<html>frame</html>".to_vec(), 0),
+                ("metadata.json", metadata, 0),
+            ];
+            let bytes = build_onefile_zip(onefile_prefix(), &entries, true);
+            let archive = detect_bytes(&bytes).unwrap().expect("archive");
+            assert_eq!(
+                archive.entries[archive.by_name["resources/9.bin"]].mime.as_deref(),
+                mime,
+                "metadata of {size} bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn onefile_detect_central_entry_may_fill_the_directory_exactly() {
+        let entries = [("", Vec::new(), 0)];
+        let bytes = build_onefile_zip(onefile_prefix(), &entries, true);
+        let eocd = eocd_pos(&bytes);
+        assert_eq!(u32_at(&bytes, eocd + 12), 46);
+        let archive = detect_bytes(&bytes).unwrap().expect("archive");
+        assert_eq!(archive.entries.len(), 1);
+        assert!(archive.by_name.contains_key(""));
+    }
+
+    /// Offsets of the central directory entries of a file-absolute fixture.
+    fn central_entries(bytes: &[u8]) -> Vec<usize> {
+        let eocd = eocd_pos(bytes);
+        let mut at = u32_at(bytes, eocd + 16) as usize;
+        let mut entries = Vec::new();
+        for _ in 0..u16_at(bytes, eocd + 10) {
+            entries.push(at);
+            at += 46 + usize::from(u16_at(bytes, at + 28));
+        }
+        entries
+    }
+
+    #[test]
+    fn onefile_detect_skips_an_entry_with_either_zip64_size() {
+        for field in [20, 24] {
+            let mut bytes = onefile_fixture(true);
+            let first = central_entries(&bytes)[0];
+            bytes[first + field..first + field + 4].copy_from_slice(&[255; 4]);
+            let archive = detect_bytes(&bytes).unwrap().expect("archive");
+            assert_eq!(archive.skipped, vec!["resources/0.woff2".to_owned()], "field {field}");
+            assert_eq!(archive.entries.len(), 2);
+        }
+    }
+
+    #[test]
+    fn onefile_detect_rejects_entries_that_start_at_the_central_directory() {
+        let mut bytes = onefile_fixture(true);
+        let cd = u32_at(&bytes, eocd_pos(&bytes) + 16);
+        for at in central_entries(&bytes) {
+            bytes[at + 42..at + 46].copy_from_slice(&cd.to_le_bytes());
+        }
+        assert_eq!(
+            detect_bytes(&bytes).err().as_deref(),
+            Some("entry resources/0.woff2 has a bad local header")
+        );
+    }
+
+    #[test]
+    fn onefile_detect_data_offset_follows_the_local_name_and_extra_field() {
+        let mut bytes = onefile_fixture(true);
+        let first = central_entries(&bytes)[0];
+        let local = u32_at(&bytes, first + 42) as usize;
+        bytes[local + 28..local + 30].copy_from_slice(&4_u16.to_le_bytes());
+        let archive = detect_bytes(&bytes).unwrap().expect("archive");
+        let entry = &archive.entries[archive.by_name["resources/0.woff2"]];
+        assert_eq!(entry.data_offset, (local + 30 + "resources/0.woff2".len() + 4) as u64);
+    }
+
+    #[test]
+    fn onefile_detect_entry_data_may_end_exactly_at_the_central_directory() {
+        let base = onefile_fixture(true);
+        let first = central_entries(&base)[0];
+        let cd = u32_at(&base, eocd_pos(&base) + 16) as usize;
+        let data = u32_at(&base, first + 42) as usize + 30 + "resources/0.woff2".len();
+        for (size, overrun) in [(cd - data, false), (cd - data + 1, true)] {
+            let mut bytes = base.clone();
+            for field in [20, 24] {
+                bytes[first + field..first + field + 4].copy_from_slice(&(size as u32).to_le_bytes());
+            }
+            let result = detect_bytes(&bytes);
+            if overrun {
+                assert_eq!(
+                    result.err().as_deref(),
+                    Some("entry resources/0.woff2 overruns the archive")
+                );
+            } else {
+                let archive = result.unwrap().expect("archive");
+                assert_eq!(archive.entries[archive.by_name["resources/0.woff2"]].len, size as u64);
+            }
+        }
     }
 
     struct OnefileServer {

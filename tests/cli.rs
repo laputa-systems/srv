@@ -133,6 +133,23 @@ fn an_occupied_port_exits_1() {
 }
 
 #[test]
+fn reports_the_archive_entry_skipped_at_startup() {
+    let taken = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = taken.local_addr().unwrap().port().to_string();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("deflated.html");
+    std::fs::write(&file, include_bytes!("fixtures/onefile-deflated.html")).unwrap();
+
+    let output = finished(srv().args(["-p", &port]).arg(&file));
+    let stderr = failure(&output);
+    assert!(
+        stderr.contains("1 archive entry is not served (unsupported compression or encryption): note.txt"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&format!("failed to bind 127.0.0.1:{port}")), "{stderr}");
+}
+
+#[test]
 fn version_prints_the_package_version_and_exits_0() {
     for flag in ["-V", "--version"] {
         let output = finished(srv().arg(flag));
