@@ -53,6 +53,20 @@ def scope_args(files, config):
     return args + ['--re', config['critical']]
 
 
+def without_name_filter(args):
+    # cargo-mutants ORs repeated --re filters, so an exact-name replay must
+    # drop the critical-scope filter rather than add to it.
+    kept, skip = [], False
+    for arg in args:
+        if skip:
+            skip = False
+        elif arg == '--re':
+            skip = True
+        else:
+            kept.append(arg)
+    return kept
+
+
 def parse_changes(data):
     fields = data.split('\0')
     changes = {}
@@ -226,7 +240,7 @@ def main():
                     pending.remove(name)
             for number, name in enumerate(n for n, v in results.items() if v == 'timeout'):
                 regex = '^' + re.sub(r'([\\.^$|?*+()\[\]{}])', r'\\\1', name) + '$'
-                retry_args = args + ['--re', regex]
+                retry_args = without_name_filter(args) + ['--re', regex]
                 if listing(retry_args) != [name]:
                     raise GateError(f'timeout rerun selection error: {name}')
                 out = WORK / f'retry-{index}-{number}'

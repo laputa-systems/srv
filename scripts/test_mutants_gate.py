@@ -6,7 +6,7 @@ import tempfile
 import unittest
 
 from mutants_gate import (
-    GateError, classify, parse_changes, parse_listing, read_results, scope_args, selected_or_fail, scope_for, verdict,
+    GateError, classify, parse_changes, parse_listing, read_results, scope_args, without_name_filter, selected_or_fail, scope_for, verdict,
 )
 
 CONFIG = {'irrelevant': ['*.md', 'LICENSE'], 'scope': ['src/main.rs']}
@@ -37,6 +37,11 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(pattern.search('src/main.rs:1220:9: delete match arm in Server::dispatch'))
         self.assertFalse(pattern.search('src/main.rs:1335:9: delete match arm in Server::dispatch_docs'))
         self.assertFalse(pattern.search('src/main.rs:215:24: replace += with *= in natural_cmp'))
+
+    def test_timeout_replay_drops_the_scope_filter(self):
+        args = ['-f', 'src/main.rs', '--re', 'critical']
+        self.assertEqual(without_name_filter(args), ['-f', 'src/main.rs'])
+        self.assertEqual(without_name_filter(['--in-diff', 'pr.diff']), ['--in-diff', 'pr.diff'])
 
     def test_irrelevant_does_not_select_scope(self):
         self.assertEqual(scope_for({'README.md': classify('README.md', 'M', CONFIG)}, CONFIG), set())
