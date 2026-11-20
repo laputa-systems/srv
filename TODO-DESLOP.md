@@ -1,11 +1,25 @@
 Prefix: DSLP
-Next: 11
+Next: 12
 
 Deslop campaign backlog ([plan](https://github.com/laputa-systems/stuff/blob/main/docs/campaigns/deslop.md)). One agent works this file: take the lowest-numbered open ticket whose area does not start with `Needs owner ·`. After DSLP-5, work the open P1 and P2 findings, then fill in `## Report` below.
 
 ## Report
 
-Pass complete (base `dcc7921`). Every ticket is closed.
+**Bench**
+
+No benchmark harness, fixtures, results, budgets, or performance entrypoint exist in the tracked repository (Cargo.toml, Makefile, and scripts). AGENTS.md states that local browsing has no throughput requirement. No Full tier was run.
+
+| User outcome or resource | Coverage |
+| --- | --- |
+| Startup and first response | None |
+| Completed file and archive entry transfers, directory listings | None |
+| Markdown, Mermaid and docs rendering | None |
+| Concurrent requests and slow connections | None |
+| CPU per completed request, peak memory, I/O, bandwidth and artifact size | None |
+
+Ranked gap: DSLP-11 (P3) covers the absence of representative workloads, correctness and completion checks, baselines, resource metrics, and attribution. There are no existing metric scopes, sample counts, regression gates, preflight, run records, or cleanup guarantees to evaluate. CPU sampling, allocation/footprint tools, and syscall counts are candidate attribution tools; instrumented runs must remain separate from timed runs. If a performance goal is adopted, start with a checked local HTTP journey and measure CPU and memory before setting a gate. No entrypoint was added because there is no existing harness to extend, and no timing claim is made on this busy host.
+
+Original pass complete (base `dcc7921`); its tickets were closed.
 
 | Measure | Before | After |
 | --- | --- | --- |
@@ -38,4 +52,12 @@ Shared-file gaps: F3 should generate the `coverage` and `mutants-diff` targets a
 
 ## Tickets
 
+### DSLP-11 · P3 · Establish representative serving workloads and resource measurements
+
+- **Area:** deslop · bench
+- **Where:** src/main.rs:726, src/main.rs:1071, src/main.rs:1176, src/main.rs:1501
+- **Problem:** No benchmark measures completed file, directory, Markdown, docs or archive requests, startup, or resource use; regressions have no performance baseline or attribution path.
+- **Recommendation:** If performance becomes a project goal, build representative checked end-to-end workloads, record CPU, memory and I/O, and add profiling and paired comparison before setting gates.
+- **Fix with:** bench-pyramid
+- **Effort:** M
 
