@@ -21,3 +21,9 @@ CI run on 147dd84 selected 154 critical mutants: 115 caught, 8 unviable, 23 miss
 | 858:22 `>`→`>=` | Equivalent: `cd_abs == cd_offset` is taken by the preceding branch. Excluded in `.cargo/mutants.toml`. |
 | 258:15, 262:11 `+=`→`-=`/`*=` in percent_decode; 799:15 `-=`→`/=` in onefile_detect | Hang: the index never advances past the end, so the loop cannot finish (`cargo test` still running after 40s). No input can differ quickly; the gate's 3x rerun records a confirmed hang. |
 | 252:13 `<`→`<=`/`==`/`>` in percent_decode | Caught: the suite fails in 0.3s locally (`percent_decode_space`, `percent_decode_slash`, integration tests). The CI timeout did not reproduce; the gate's rerun resolves it. |
+
+## Timeout dispositions (PR #49, final)
+
+- `src/main.rs:252:13` (`<` to `>`, `==`, `<=` in `percent_decode`): the hosted run timed out building all three at once (300 s build timeout under runner contention). A local run of cargo-mutants 27.1.0 with a 600 s build timeout found two caught and one unviable. The gate's build timeout is now 600 s.
+- Five non-terminating mutants are listed in `.cargo/mutants.toml` with that reason: `258:15` and `262:11` (`+=` to `-=` and `*=` in `percent_decode`) and `799:15` (`-=` to `/=` in `onefile_detect`). No test can observe them except as a timeout. The gate's 3x replay confirmed `258:15` `-=` on PR #49. The other four ran past 40 s when applied by hand. They were never counted as confirmed hangs by the gate.
+- Runner time on PR #49: 900 s (whole file, exhausted), 729 s, 734 s, and 900 s (bounded scope; the last run exhausted the budget on 150 s replays) before these dispositions.

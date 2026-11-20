@@ -6,4 +6,10 @@ exclude_re = [
     'replace \+ with \* in glob_match',
     # The `cd_abs == cd_offset` branch above has already taken equality, so `>` and `>=` choose the same arm.
     'src/main\.rs:858:22: replace > with >= in parse_onefile_candidate',
+    # Non-terminating: each stops the loop index from advancing past the input, so no
+    # test can observe the mutant except as a timeout. 258:15 `-=` was confirmed by
+    # the gate's 3x replay on PR #49; the other four ran past 40 s when applied by hand.
+    'src/main\.rs:258:15: replace \+= with [-*]= in percent_decode',
+    'src/main\.rs:262:11: replace \+= with [-*]= in percent_decode',
+    'src/main\.rs:799:15: replace -= with /= in onefile_detect',
 ]

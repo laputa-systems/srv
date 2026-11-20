@@ -6,5 +6,5 @@ critical = ' in (Server::)?(percent_decode|hex_val|normalize_into|onefile_detect
 irrelevant = ["*.md", "LICENSE", "LICENSE.*"]
 budget_seconds = 900
 timeout_seconds = 10
-build_timeout_seconds = 300
+build_timeout_seconds = 600
 jobs = 4
