@@ -48,6 +48,11 @@ def scope_for(classes, config):
     return set(config['scope']) if any(kind in triggers for kind in classes.values()) else set()
 
 
+def scope_args(files, config):
+    args = sum((['-f', p] for p in sorted(files)), [])
+    return args + ['--re', config['critical']]
+
+
 def parse_changes(data):
     fields = data.split('\0')
     changes = {}
@@ -189,8 +194,8 @@ def main():
                     whole.add(path)
         in_diff = [p for p in production if p not in whole]
         if whole:
-            args = sum((['-f', p] for p in sorted(whole)), [])
-            phases.append(('whole ' + ', '.join(sorted(whole)), args, listing(args)))
+            args = scope_args(whole, config)
+            phases.append(('critical ' + ', '.join(sorted(whole)), args, listing(args)))
         if in_diff:
             path = WORK / 'pr.diff'
             path.write_text(''.join(diffs[p] for p in in_diff))

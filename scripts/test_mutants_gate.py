@@ -1,10 +1,12 @@
 import json
+import re
+import tomllib
 from pathlib import Path
 import tempfile
 import unittest
 
 from mutants_gate import (
-    GateError, classify, parse_changes, parse_listing, read_results, selected_or_fail, scope_for, verdict,
+    GateError, classify, parse_changes, parse_listing, read_results, scope_args, selected_or_fail, scope_for, verdict,
 )
 
 CONFIG = {'irrelevant': ['*.md', 'LICENSE'], 'scope': ['src/main.rs']}
@@ -25,6 +27,16 @@ class SelectionTests(unittest.TestCase):
         ]:
             with self.subTest(path=path):
                 self.assertEqual(classify(path, status, CONFIG), expected)
+
+    def test_scope_selects_only_the_critical_functions(self):
+        config = tomllib.loads((Path(__file__).resolve().parent.parent / '.cargo/mutants-gate.toml').read_text())
+        args = scope_args({'src/main.rs'}, config)
+        self.assertEqual(args[:3], ['-f', 'src/main.rs', '--re'])
+        pattern = re.compile(args[3])
+        self.assertTrue(pattern.search('src/main.rs:258:15: replace += with -= in percent_decode'))
+        self.assertTrue(pattern.search('src/main.rs:1220:9: delete match arm in Server::dispatch'))
+        self.assertFalse(pattern.search('src/main.rs:1335:9: delete match arm in Server::dispatch_docs'))
+        self.assertFalse(pattern.search('src/main.rs:215:24: replace += with *= in natural_cmp'))
 
     def test_irrelevant_does_not_select_scope(self):
         self.assertEqual(scope_for({'README.md': classify('README.md', 'M', CONFIG)}, CONFIG), set())

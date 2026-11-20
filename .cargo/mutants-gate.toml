@@ -1,4 +1,8 @@
 scope = ["src/main.rs"]
+# The required scope is the request-admission contract: URL decoding, path
+# normalization under the served root, onefile archive admission and dispatch.
+# Other mutants in src/main.rs are covered by advisory audits, not this gate.
+critical = ' in (Server::)?(percent_decode|hex_val|normalize_into|onefile_detect|parse_onefile_candidate|prefix_looks_like_html|dispatch|dispatch_onefile|query_param)\b'
 irrelevant = ["*.md", "LICENSE", "LICENSE.*"]
 budget_seconds = 900
 timeout_seconds = 10
