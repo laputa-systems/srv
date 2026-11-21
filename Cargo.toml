@@ -7,7 +7,6 @@ license = "MIT"
 
 [dependencies]
 httparse = "1"
-merman = { version = "0.10", default-features = false, features = ["diagram-flowchart", "svg"] }
 pulldown-cmark = "0.13"
 serde_json = "1"
 
