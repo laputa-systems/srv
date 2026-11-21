@@ -1,15 +1,24 @@
 import json
-import re
-import tomllib
 from pathlib import Path
 import tempfile
 import unittest
 
 from mutants_gate import (
-    GateError, classify, parse_changes, parse_listing, line_diff, read_results, scope_args, selected_or_fail, scope_for, verdict,
+    GateError, classify, exact_name_regex, is_relevant, line_diff, load_config, parse_changes, parse_listing,
+    read_results, resolve_replay, scope_args, scope_for, select, selected_or_fail, verdict,
 )
 
-CONFIG = {'irrelevant': ['*.md', 'LICENSE'], 'scope': ['src/main.rs']}
+CRITICAL = ' in (Server::)?(percent_decode|dispatch)\\b'
+CONFIG = {'irrelevant': ['*.md', 'LICENSE'], 'scope': ['src/main.rs'], 'critical': CRITICAL}
+DECLARED = (
+    'scope = ["src/main.rs"]\n'
+    "critical = ' in (Server::)?(percent_decode|dispatch)\\b'\n"
+    'irrelevant = ["*.md"]\n'
+)
+
+
+def classes_of(changes):
+    return {path: classify(path, status, CONFIG) for path, status in changes.items()}
 
 
 class SelectionTests(unittest.TestCase):
@@ -28,25 +37,45 @@ class SelectionTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(classify(path, status, CONFIG), expected)
 
-    def test_scope_selects_only_the_critical_functions(self):
-        config = tomllib.loads((Path(__file__).resolve().parent.parent / '.cargo/mutants-gate.toml').read_text())
-        args = scope_args({'src/main.rs'}, config)
-        self.assertEqual(args[:3], ['-f', 'src/main.rs', '--re'])
-        pattern = re.compile(args[3])
-        self.assertTrue(pattern.search('src/main.rs:258:15: replace += with -= in percent_decode'))
-        self.assertTrue(pattern.search('src/main.rs:1220:9: delete match arm in Server::dispatch'))
-        self.assertFalse(pattern.search('src/main.rs:1335:9: delete match arm in Server::dispatch_docs'))
-        self.assertFalse(pattern.search('src/main.rs:215:24: replace += with *= in natural_cmp'))
+    def test_production_only_change_selects_only_its_changed_lines(self):
+        critical, diff = select(classes_of({'src/lib.rs': 'M', 'src/main.rs': 'M'}), CONFIG)
+        self.assertEqual(critical, set())
+        self.assertEqual(diff, ['src/lib.rs', 'src/main.rs'])
 
-    def test_timeout_replay_selects_its_own_line(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / 'src').mkdir()
-            (root / 'src/main.rs').write_text('fn a() {}\n    i += 1;\n')
-            self.assertEqual(
-                line_diff('src/main.rs:2:7: replace += with -= in a', root),
-                '--- a/src/main.rs\n+++ b/src/main.rs\n@@ -2,1 +2,1 @@\n-    i += 1;\n+    i += 1;\n',
-            )
+    def test_test_only_change_selects_exactly_the_declared_critical_scope(self):
+        critical, diff = select(classes_of({'tests/cli.rs': 'D'}), CONFIG)
+        self.assertEqual((critical, diff), ({'src/main.rs'}, []))
+        args = scope_args(critical, CONFIG)
+        self.assertEqual(args, ['-f', 'src/main.rs', '--re', CRITICAL])
+        self.assertNotIn('src/', args)
+
+    def test_mixed_change_selects_the_critical_scope_and_the_changed_lines(self):
+        critical, diff = select(classes_of({'tests/cli.rs': 'D', 'src/other.rs': 'M'}), CONFIG)
+        self.assertEqual((critical, diff), ({'src/main.rs'}, ['src/other.rs']))
+
+    def test_edited_test_code_inside_production_selects_the_critical_scope(self):
+        critical, diff = select(classes_of({'src/other.rs': 'M'}), CONFIG, test_hunks=True)
+        self.assertEqual((critical, diff), ({'src/main.rs'}, ['src/other.rs']))
+
+    def test_docs_only_change_is_irrelevant(self):
+        classes = classes_of({'README.md': 'M', 'LICENSE': 'M'})
+        self.assertFalse(is_relevant(classes))
+        self.assertEqual(select(classes, CONFIG), (set(), []))
+        self.assertFalse(is_relevant(classes_of({'src/old.rs': 'D'})))
+
+    def test_missing_critical_declaration_fails_visibly(self):
+        self.assertEqual(load_config(DECLARED)['scope'], ['src/main.rs'])
+        for text, message in [
+            ('scope = ["src/main.rs"]\nirrelevant = []\n', 'declare critical'),
+            ('scope = ["src/main.rs"]\ncritical = " "\nirrelevant = []\n', 'declare critical'),
+            ('critical = "x"\nirrelevant = []\n', 'explicit list'),
+            ('scope = ["src/"]\ncritical = "x"\nirrelevant = []\n', 'explicit list'),
+            ('scope = ["src/*.rs"]\ncritical = "x"\nirrelevant = []\n', 'explicit list'),
+            ('scope = []\ncritical = "x"\nirrelevant = []\n', 'explicit list'),
+            ('{', 'invalid gate config'),
+        ]:
+            with self.subTest(text=text), self.assertRaisesRegex(GateError, message):
+                load_config(text)
 
     def test_irrelevant_does_not_select_scope(self):
         self.assertEqual(scope_for({'README.md': classify('README.md', 'M', CONFIG)}, CONFIG), set())
@@ -67,6 +96,34 @@ class SelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(GateError, 'empty selection'):
             selected_or_fail(True, [])
         selected_or_fail(False, [])
+
+
+class ReplayTests(unittest.TestCase):
+    def test_replay_selects_its_own_line_and_exact_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'src').mkdir()
+            (root / 'src/main.rs').write_text('fn a() {}\n    i += 1;\n')
+            self.assertEqual(
+                line_diff('src/main.rs:2:7: replace += with -= in a', root),
+                '--- a/src/main.rs\n+++ b/src/main.rs\n@@ -2,1 +2,1 @@\n-    i += 1;\n+    i += 1;\n',
+            )
+            for name in ('src/main.rs:9:1: x', 'nonsense'):
+                with self.subTest(name=name), self.assertRaisesRegex(GateError, 'cannot locate'):
+                    line_diff(name, root)
+        self.assertEqual(exact_name_regex('src/a.rs:2:7: replace += with -= in f'),
+                         '^src/a\\.rs:2:7: replace \\+= with -= in f$')
+
+    def test_unconfirmed_timeouts_stay_unresolved(self):
+        name = 'src/a.rs:1:1: replace f -> u32 with 0'
+        self.assertEqual(resolve_replay(name, [name], 'timeout'), 'confirmed hang')
+        self.assertEqual(resolve_replay(name, [name], 'caught'), 'caught')
+        self.assertEqual(resolve_replay(name, [name], 'missed'), 'missed')
+        for selected, replay in [([], None), ([name, 'src/a.rs:1:9: delete field x'], 'timeout'), ([name], None)]:
+            with self.subTest(selected=selected):
+                self.assertEqual(resolve_replay(name, selected, replay), 'timeout')
+        with self.assertRaisesRegex(GateError, 'unresolved timeout'):
+            verdict({name: resolve_replay(name, [], None)})
 
 
 class ResultsTests(unittest.TestCase):
