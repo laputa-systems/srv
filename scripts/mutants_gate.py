@@ -43,9 +43,45 @@ def classify(path, status, config):
     return 'unclassified'
 
 
+def load_config(text):
+    try:
+        config = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise GateError(f'invalid gate config: {error}') from error
+    scope = config.get('scope')
+    if (not isinstance(scope, list) or not scope
+            or any(not isinstance(p, str) or not p.endswith('.rs') or any(c in p for c in '*?[') for p in scope)):
+        raise GateError('gate config must declare scope as an explicit list of .rs files, not a directory or glob')
+    critical = config.get('critical')
+    if not isinstance(critical, str) or not critical.strip():
+        raise GateError('gate config must declare critical, a regex naming the important functions; '
+                        'the gate never mutates a whole tree by default')
+    if not isinstance(config.get('irrelevant'), list):
+        raise GateError('gate config must declare irrelevant as a list of patterns')
+    return config
+
+
+def is_relevant(classes):
+    return any(kind not in {'irrelevant', 'deleted production'} for kind in classes.values())
+
+
 def scope_for(classes, config):
     triggers = {'tests', 'fixtures', 'build configuration', 'gate', 'unclassified'}
     return set(config['scope']) if any(kind in triggers for kind in classes.values()) else set()
+
+
+def select(classes, config, test_hunks=False):
+    """Return (critical scope files, changed production files).
+
+    A change that can weaken a protecting test (tests, fixtures, build
+    configuration, the gate, or edited test code inside a production file)
+    selects the declared critical scope. Every changed production file is
+    selected by its changed lines, whether or not the scope is also selected.
+    """
+    critical = scope_for(classes, config)
+    if test_hunks:
+        critical |= set(config['scope'])
+    return critical, sorted(p for p, kind in classes.items() if kind == 'production')
 
 
 def scope_args(files, config):
@@ -53,12 +89,30 @@ def scope_args(files, config):
     return args + ['--re', config['critical']]
 
 
+def exact_name_regex(name):
+    return '^' + re.sub(r'([\\.^$|?*+()\[\]{}])', r'\\\1', name) + '$'
+
+
 def line_diff(name, root):
     # cargo-mutants 27.1.0 lists struct-field deletions regardless of --re
     # and --exclude-re, so a replay selects its mutant by line as well as name.
-    path, line = name.split(':')[:2]
-    text = (root / path).read_text().splitlines()[int(line) - 1]
+    try:
+        path, line = name.split(':')[:2]
+        text = (root / path).read_text().splitlines()[int(line) - 1]
+    except (ValueError, IndexError) as error:
+        raise GateError(f'cannot locate the line of mutant {name}') from error
     return f'--- a/{path}\n+++ b/{path}\n@@ -{line},1 +{line},1 @@\n-{text}\n+{text}\n'
+
+
+def resolve_replay(name, selected, replay):
+    """Outcome of a timeout replay; `replay` is None when it was not run.
+
+    Only a replay that selected exactly this mutant and timed out again
+    confirms a hang. Any other replay leaves the timeout unresolved.
+    """
+    if selected != [name] or replay is None:
+        return 'timeout'
+    return 'confirmed hang' if replay == 'timeout' else replay
 
 
 def parse_changes(data):
@@ -134,7 +188,7 @@ def selected_or_fail(relevant, names):
 
 def main():
     started = time.monotonic()
-    config = tomllib.loads(CONFIG.read_text())
+    config = load_config(CONFIG.read_text())
     deadline = started + config['budget_seconds']
     WORK.mkdir(parents=True, exist_ok=True)
     base = sys.argv[1]
@@ -178,9 +232,12 @@ def main():
         classes = {path: classify(path, status, config) for path, status in changes.items()}
         for path, kind in sorted(classes.items()):
             print(f'{kind}: {path}', flush=True)
-        whole = scope_for(classes, config)
-        production = [p for p, k in classes.items() if k == 'production']
+        if not is_relevant(classes):
+            print('irrelevant change: no mutants selected', flush=True)
+            return
+        production = select(classes, config)[1]
         diffs = {}
+        test_hunks = False
         for path in production:
             diff = run(['git', 'diff', '--merge-base', base, '--no-ext-diff', '--', path])
             if not diff and changes[path] == 'A':
@@ -194,27 +251,28 @@ def main():
                 old_end = int(match[1]) + int(match[2] or 1) - 1
                 new_end = int(match[3]) + int(match[4] or 1) - 1
                 if old_end >= old_line or new_end >= new_line:
-                    whole.update(config['scope'])
-            if path not in whole:
-                file_diff = WORK / 'file.diff'
-                file_diff.write_text(diff)
-                if not listing(['--in-diff', str(file_diff)]):
-                    whole.add(path)
-        in_diff = [p for p in production if p not in whole]
-        if whole:
-            args = scope_args(whole, config)
-            phases.append(('critical ' + ', '.join(sorted(whole)), args, listing(args)))
+                    test_hunks = True
+        critical, production = select(classes, config, test_hunks)
+        in_diff = []
+        for path in production:
+            file_diff = WORK / 'file.diff'
+            file_diff.write_text(diffs[path])
+            if listing(['--in-diff', str(file_diff)]):
+                in_diff.append(path)
+            else:
+                print(f'no mutable changed lines: {path}', flush=True)
+        if critical:
+            args = scope_args(critical, config)
+            names = listing(args)
+            selected_or_fail(True, names)
+            phases.append(('critical ' + ', '.join(sorted(critical)), args, names))
         if in_diff:
             path = WORK / 'pr.diff'
             path.write_text(''.join(diffs[p] for p in in_diff))
             args = ['--in-diff', str(path)]
             phases.append(('diff ' + ', '.join(in_diff), args, listing(args)))
-        selected = [n for _, _, names in phases for n in names]
-        relevant = any(k not in {'irrelevant', 'deleted production'} for k in classes.values())
-        selected_or_fail(relevant, selected)
-        if not relevant:
-            print('irrelevant change: no mutants selected', flush=True)
-        if not relevant:
+        if not phases:
+            print('no mutable changed lines: no mutants selected', flush=True)
             return
         version = run(common + ['--version']).strip()
         configured = set(listing([]))
@@ -233,25 +291,29 @@ def main():
                 if result != 'timeout':
                     pending.remove(name)
             for number, name in enumerate(n for n, v in results.items() if v == 'timeout'):
-                regex = '^' + re.sub(r'([\\.^$|?*+()\[\]{}])', r'\\\1', name) + '$'
                 diff = WORK / f'retry-{index}-{number}.diff'
-                diff.write_text(line_diff(name, ROOT))
-                retry_args = ['--in-diff', str(diff), '--re', regex]
-                if listing(retry_args) != [name]:
-                    raise GateError(f'timeout rerun selection error: {name}')
-                out = WORK / f'retry-{index}-{number}'
-                run(common + ['--baseline', 'skip', '--timeout', str(config['timeout_seconds'] * 3),
-                    '--build-timeout', str(config['build_timeout_seconds']), '--jobs', '1',
-                    '--output', str(out)] + retry_args, allowed=(0, 2, 3), capture=False)
-                rerun = read_results(out / 'mutants.out/outcomes.json', [name])[name]
-                counts['timeout'] -= 1
-                if rerun == 'timeout':
-                    results[name] = 'confirmed hang'
-                    hangs.append(name)
-                    counts['confirmed hang'] += 1
+                try:
+                    diff.write_text(line_diff(name, ROOT))
+                except (GateError, OSError):
+                    replayed, rerun = [], None
                 else:
-                    results[name] = rerun
-                    counts[rerun] += 1
+                    retry_args = ['--in-diff', str(diff), '--re', exact_name_regex(name)]
+                    replayed, rerun = listing(retry_args), None
+                    if replayed == [name]:
+                        out = WORK / f'retry-{index}-{number}'
+                        run(common + ['--baseline', 'skip', '--timeout', str(config['timeout_seconds'] * 3),
+                            '--build-timeout', str(config['build_timeout_seconds']), '--jobs', '1',
+                            '--output', str(out)] + retry_args, allowed=(0, 2, 3), capture=False)
+                        rerun = read_results(out / 'mutants.out/outcomes.json', [name])[name]
+                final = resolve_replay(name, replayed, rerun)
+                if final == 'timeout':
+                    print(f'unresolved timeout: {name} (replay did not select exactly this mutant)', flush=True)
+                    continue
+                counts['timeout'] -= 1
+                results[name] = final
+                if final == 'confirmed hang':
+                    hangs.append(name)
+                counts[final] += 1
                 pending.remove(name)
             verdict(results)
     finally:

@@ -31,7 +31,7 @@ coverage:
 BASE ?= origin/main
 
 mutants-selftest:
-	python3 -B -m unittest discover -s scripts -p 'test_mutants_gate.py'
+	python3 -B -m unittest discover -s scripts -p 'test_mutants_*.py'
 
 mutants-diff: mutants-selftest
 	python3 -B scripts/mutants_gate.py "$(BASE)"
