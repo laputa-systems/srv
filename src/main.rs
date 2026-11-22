@@ -780,12 +780,12 @@ fn parse_onefile_candidate(
 
     // The onefile format bakes file-absolute offsets into the archive; a
     // conventional prefixed ZIP keeps offsets relative to the archive start.
-    let (file_absolute, rel_prefix) = if cd_abs == cd_offset {
-        (true, 0)
-    } else if cd_abs > cd_offset {
-        (false, cd_abs - cd_offset)
-    } else {
-        return Err("the embedded ZIP central directory offset is out of bounds".to_owned());
+    let (file_absolute, rel_prefix) = match cd_abs.cmp(&cd_offset) {
+        std::cmp::Ordering::Equal => (true, 0),
+        std::cmp::Ordering::Greater => (false, cd_abs - cd_offset),
+        std::cmp::Ordering::Less => {
+            return Err("the embedded ZIP central directory offset is out of bounds".to_owned());
+        }
     };
 
     let mut cd = vec![0u8; cd_size as usize];
