@@ -18,6 +18,8 @@
 
 ## Verification
 
+`make clean` removes the checkout's ordinary `./target` directory. It refuses a file or symlink at that path.
+
 | Command | Warm cost | Covers |
 | --- | --- | --- |
 | `make test` | under 1s (5s cold) | unit tests in `src/main.rs`, `tests/cli.rs`, `tests/help.rs` |
