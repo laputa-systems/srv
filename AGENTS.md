@@ -16,6 +16,8 @@
 - A URL through a symlinked directory can still name a file outside that root. `walk_docs_dir` skips symlink entries, so the `--docs` tree does not list them.
 
 
+The roadmap, [docs/roadmap.md](docs/roadmap.md), holds all current and future work; its Status is the resume point.
+
 ## Verification
 
 `make clean` removes the checkout's ordinary `./target` directory. It refuses a file or symlink at that path.
